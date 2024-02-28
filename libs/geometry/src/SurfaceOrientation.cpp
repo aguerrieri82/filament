@@ -227,18 +227,13 @@ SurfaceOrientation* OrientationBuilderImpl::buildWithSuppliedTangents() {
 // done via meshoptimizer.
 //
 SurfaceOrientation* OrientationBuilderImpl::buildWithUvs() {
-    if (!ASSERT_PRECONDITION_NON_FATAL(this->normalStride == 0, "Non-zero normal stride not yet supported.")) {
-        return nullptr;
-    }
-    if (!ASSERT_PRECONDITION_NON_FATAL(this->tangentStride == 0, "Non-zero tangent stride not yet supported.")) {
-        return nullptr;
-    }
-    if (!ASSERT_PRECONDITION_NON_FATAL(this->uvStride == 0, "Non-zero uv stride not yet supported.")) {
-        return nullptr;
-    }
-    if (!ASSERT_PRECONDITION_NON_FATAL(this->positionStride == 0, "Non-zero positions stride not yet supported.")) {
-        return nullptr;
-    }
+
+    const auto nstride = this->normalStride == 0 ? sizeof(float3) : this->normalStride;
+    const auto ustride = this->uvStride == 0 ? sizeof(float2) : this->uvStride;
+    const auto pstride = this->positionStride == 0 ? sizeof(float3) : this->positionStride;
+
+    #define STRIDE_GET(v, i, s, t)  (*(t*)(((char*)v) + (i * s)))
+
     vector<float3> tan1(vertexCount);
     vector<float3> tan2(vertexCount);
     memset(tan1.data(), 0, sizeof(float3) * vertexCount);
@@ -246,12 +241,12 @@ SurfaceOrientation* OrientationBuilderImpl::buildWithUvs() {
     for (size_t a = 0; a < triangleCount; ++a) {
         uint3 tri = triangles16 ? uint3(triangles16[a]) : triangles32[a];
         assert_invariant(tri.x < vertexCount && tri.y < vertexCount && tri.z < vertexCount);
-        const float3& v1 = positions[tri.x];
-        const float3& v2 = positions[tri.y];
-        const float3& v3 = positions[tri.z];
-        const float2& w1 = uvs[tri.x];
-        const float2& w2 = uvs[tri.y];
-        const float2& w3 = uvs[tri.z];
+        const float3& v1 = STRIDE_GET(positions, tri.x, pstride, float3);
+        const float3& v2 = STRIDE_GET(positions, tri.y, pstride, float3);
+        const float3& v3 = STRIDE_GET(positions, tri.z, pstride, float3);
+        const float2& w1 = STRIDE_GET(uvs, tri.x, ustride, float2);
+        const float2& w2 = STRIDE_GET(uvs, tri.y, ustride, float2);
+        const float2& w3 = STRIDE_GET(uvs, tri.z, ustride, float2);
         float x1 = v2.x - v1.x;
         float x2 = v3.x - v1.x;
         float y1 = v2.y - v1.y;
@@ -267,7 +262,7 @@ SurfaceOrientation* OrientationBuilderImpl::buildWithUvs() {
         // In general we can't guarantee smooth tangents when the UV's are non-smooth, but let's at
         // least avoid divide-by-zero and fall back to normals-only method.
         if (d == 0.0) {
-            const float3& n1 = normals[tri.x];
+            const float3& n1 = STRIDE_GET(normals, tri.x, nstride, float3);
             sdir = randomPerp(n1);
             tdir = cross(n1, sdir);
         } else {
@@ -287,7 +282,7 @@ SurfaceOrientation* OrientationBuilderImpl::buildWithUvs() {
 
     vector<quatf> quats(vertexCount);
     for (size_t a = 0; a < vertexCount; a++) {
-        const float3& n = normals[a];
+        const float3& n = STRIDE_GET(normals, a, nstride, float3);
         const float3& t1 = tan1[a];
         const float3& t2 = tan2[a];
 

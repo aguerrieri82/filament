@@ -188,6 +188,10 @@ public:
     size_t retrieveBlob(const void* UTILS_NONNULL key, size_t keySize,
             void* UTILS_NONNULL value, size_t valueSize);
 
+
+    virtual bool onPreExecuted() noexcept  { return true; }
+    virtual void onPostExecuted() noexcept  { }
+
 private:
     InsertBlobFunc mInsertBlob;
     RetrieveBlobFunc mRetrieveBlob;

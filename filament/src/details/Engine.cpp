@@ -1166,6 +1166,9 @@ bool FEngine::execute() {
     if (UTILS_UNLIKELY(buffers.empty())) {
         return false;
     }
+    
+    if (!getPlatform()->onPreExecuted())
+        return true;
 
     // execute all command buffers
     auto& driver = getDriverApi();
@@ -1175,6 +1178,8 @@ bool FEngine::execute() {
             mCommandBufferQueue.releaseBuffer(item);
         }
     }
+
+    getPlatform()->onPostExecuted();
 
     return true;
 }

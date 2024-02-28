@@ -29,11 +29,22 @@
 
 namespace filament::backend {
 
+
+
 /**
  * A concrete implementation of OpenGLPlatform that supports WGL.
  */
 class PlatformWGL : public OpenGLPlatform {
+public:
+    struct Context{
+        HGLRC glContext;
+        HDC hDC;
+    };
+
+    Context getContext()  { return { mContext, mWhdc }; }
+
 protected:
+
     // --------------------------------------------------------------------------------------------
     // Platform Interface
 
@@ -55,7 +66,9 @@ protected:
     void destroySwapChain(SwapChain* swapChain) noexcept override;
     void makeCurrent(SwapChain* drawSwapChain, SwapChain* readSwapChain) noexcept override;
     void commit(SwapChain* swapChain) noexcept override;
-
+    bool onPreExecuted() noexcept override;
+public:
+    bool releaseContext = false;
 protected:
     HGLRC mContext = NULL;
     HWND mHWnd = NULL;

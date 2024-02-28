@@ -279,4 +279,12 @@ void PlatformWGL::commit(Platform::SwapChain* swapChain) noexcept {
     }
 }
 
+bool PlatformWGL::onPreExecuted() noexcept {
+    if (releaseContext){
+        wglMakeCurrent(mWhdc, NULL);
+        return false;
+    }
+    return true;
+}
+
 } // namespace filament::backend

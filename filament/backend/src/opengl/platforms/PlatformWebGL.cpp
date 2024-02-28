@@ -15,6 +15,7 @@
  */
 
 #include <backend/platforms/PlatformWebGL.h>
+#include "PlatformWebGL.h"
 
 namespace filament::backend {
 
@@ -52,5 +53,7 @@ void PlatformWebGL::makeCurrent(Platform::SwapChain* drawSwapChain,
 
 void PlatformWebGL::commit(Platform::SwapChain* swapChain) noexcept {
 }
+
+
 
 } // namespace filament::backend
