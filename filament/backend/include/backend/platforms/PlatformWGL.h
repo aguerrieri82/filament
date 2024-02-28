@@ -29,8 +29,6 @@
 
 namespace filament::backend {
 
-
-
 /**
  * A concrete implementation of OpenGLPlatform that supports WGL.
  */
