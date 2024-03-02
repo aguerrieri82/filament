@@ -580,12 +580,21 @@ void OpenGLDriver::createSamplerGroupR(Handle<HwSamplerGroup> sbh, uint32_t size
 
 UTILS_NOINLINE
 void OpenGLDriver::textureStorage(OpenGLDriver::GLTexture* t,
-        uint32_t width, uint32_t height, uint32_t depth) noexcept {
+        uint32_t width, uint32_t height, uint32_t depth, bool useProtectedMemory) noexcept {
 
     auto& gl = mContext;
 
     bindTexture(OpenGLContext::DUMMY_TEXTURE_BINDING, t);
     gl.activeTexture(OpenGLContext::DUMMY_TEXTURE_BINDING);
+
+#ifdef GL_EXT_protected_textures
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+    if (UTILS_UNLIKELY(useProtectedMemory)) {
+        assert_invariant(gl.ext.EXT_protected_textures);
+        glTexParameteri(t->gl.target, GL_TEXTURE_PROTECTED_EXT, 1);
+    }
+#endif
+#endif
 
     switch (t->gl.target) {
         case GL_TEXTURE_2D:
@@ -677,6 +686,12 @@ void OpenGLDriver::createTextureR(Handle<HwTexture> th, SamplerType target, uint
     GLenum internalFormat = getInternalFormat(format);
     assert_invariant(internalFormat);
 
+    if (UTILS_UNLIKELY(usage & TextureUsage::PROTECTED)) {
+        // renderbuffers don't have a protected mode, so we need to use a texture
+        // because protected textures are only supported on GLES 3.2, MSAA will be available.
+        usage |= TextureUsage::SAMPLEABLE;
+    }
+
     auto& gl = mContext;
     samples = std::clamp(samples, uint8_t(1u), uint8_t(gl.gets.max_samples));
     GLTexture* t = construct<GLTexture>(th, target, levels, samples, w, h, depth, format, usage);
@@ -746,7 +761,8 @@ void OpenGLDriver::createTextureR(Handle<HwTexture> th, SamplerType target, uint
                 }
 #endif
             }
-            textureStorage(t, w, h, depth);
+
+            textureStorage(t, w, h, depth, bool(usage & TextureUsage::PROTECTED));
         }
     } else {
         assert_invariant(any(usage & (
@@ -755,6 +771,7 @@ void OpenGLDriver::createTextureR(Handle<HwTexture> th, SamplerType target, uint
                 TextureUsage::STENCIL_ATTACHMENT)));
         assert_invariant(levels == 1);
         assert_invariant(target == SamplerType::SAMPLER_2D);
+        assert_invariant(none(usage & TextureUsage::PROTECTED));
         t->gl.internalFormat = internalFormat;
         t->gl.target = GL_RENDERBUFFER;
         glGenRenderbuffers(1, &t->gl.id);
@@ -1921,6 +1938,10 @@ bool OpenGLDriver::isSRGBSwapChainSupported() {
     return mPlatform.isSRGBSwapChainSupported();
 }
 
+bool OpenGLDriver::isProtectedContentSupported() {
+    return mPlatform.isProtectedContextSupported();
+}
+
 bool OpenGLDriver::isStereoSupported(backend::StereoscopicType stereoscopicType) {
     // Instanced-stereo requires instancing and EXT_clip_cull_distance.
     // Multiview-stereo requires ES 3.0 and OVR_multiview2.
@@ -1943,6 +1964,10 @@ bool OpenGLDriver::isParallelShaderCompileSupported() {
 
 bool OpenGLDriver::isDepthStencilResolveSupported() {
     return true;
+}
+
+bool OpenGLDriver::isProtectedTexturesSupported() {
+    return getContext().ext.EXT_protected_textures;
 }
 
 bool OpenGLDriver::isWorkaroundNeeded(Workaround workaround) {
@@ -2669,7 +2694,7 @@ void OpenGLDriver::endTimerQuery(Handle<HwTimerQuery> tqh) {
     mTimerQueryImpl->endTimeElapsedQuery(tq);
 }
 
-bool OpenGLDriver::getTimerQueryValue(Handle<HwTimerQuery> tqh, uint64_t* elapsedTime) {
+TimerQueryResult OpenGLDriver::getTimerQueryValue(Handle<HwTimerQuery> tqh, uint64_t* elapsedTime) {
     GLTimerQuery* tq = handle_cast<GLTimerQuery*>(tqh);
     return OpenGLTimerQueryInterface::getTimerQueryValue(tq, elapsedTime);
 }
