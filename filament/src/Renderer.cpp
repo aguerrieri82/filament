@@ -57,8 +57,8 @@ void Renderer::readPixels(RenderTarget* renderTarget,
             xoffset, yoffset, width, height, std::move(buffer));
 }
 
-void Renderer::endFrame() {
-    downcast(this)->endFrame();
+void Renderer::endFrame(bool commitSwapChain) {
+    downcast(this)->endFrame(commitSwapChain);
 }
 
 double Renderer::getUserTime() const {

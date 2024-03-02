@@ -426,7 +426,7 @@ public:
      * @see
      * beginFrame()
      */
-    void endFrame();
+    void endFrame(bool commitSwapChain = true);
 
 
     /**
@@ -577,6 +577,8 @@ public:
      */
     void resetUserTime();
 
+    bool commitSwapChain = true;
+    
 protected:
     // prevent heap allocation
     ~Renderer() = default;

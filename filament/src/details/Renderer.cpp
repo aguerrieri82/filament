@@ -307,7 +307,7 @@ bool FRenderer::beginFrame(FSwapChain* swapChain, uint64_t vsyncSteadyClockTimeN
     return false;
 }
 
-void FRenderer::endFrame() {
+void FRenderer::endFrame(bool commitSwapChain) {
     SYSTRACE_CALL();
 
     if (UTILS_UNLIKELY(mBeginFrameInternal)) {
@@ -324,7 +324,7 @@ void FRenderer::endFrame() {
         driver.debugThreading();
     }
 
-    if (mSwapChain) {
+    if (mSwapChain && commitSwapChain) {
         mSwapChain->commit(driver);
         mSwapChain = nullptr;
     }

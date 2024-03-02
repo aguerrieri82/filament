@@ -82,7 +82,7 @@ public:
     bool beginFrame(FSwapChain* swapChain, uint64_t vsyncSteadyClockTimeNano);
 
     // end a frame
-    void endFrame();
+    void endFrame(bool commitSwapChain);
 
     // render a view. must be called between beginFrame/enfFrame.
     void render(FView const* view);
@@ -130,6 +130,8 @@ public:
     ClearOptions const& getClearOptions() const noexcept {
         return mClearOptions;
     }
+
+    bool commitSwapChain = true;
 
 private:
     friend class Renderer;
