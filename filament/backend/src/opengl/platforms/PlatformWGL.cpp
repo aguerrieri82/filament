@@ -255,6 +255,10 @@ void PlatformWGL::destroySwapChain(Platform::SwapChain* swapChain) noexcept {
     wglMakeCurrent(mWhdc, mContext);
 }
 
+typedef BOOL(WINAPI* PFNWGLSWAPINTERVALEXTPROC) (int interval);
+
+PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT = nullptr;
+
 void PlatformWGL::makeCurrent(Platform::SwapChain* drawSwapChain,
                               Platform::SwapChain* readSwapChain) noexcept {
     ASSERT_PRECONDITION_NON_FATAL(drawSwapChain == readSwapChain,
@@ -269,6 +273,10 @@ void PlatformWGL::makeCurrent(Platform::SwapChain* drawSwapChain,
             wglMakeCurrent(0, NULL);
         }
     }
+
+    if (wglSwapIntervalEXT == nullptr)
+        wglSwapIntervalEXT = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
+    wglSwapIntervalEXT(0);
 }
 
 void PlatformWGL::commit(Platform::SwapChain* swapChain) noexcept {
