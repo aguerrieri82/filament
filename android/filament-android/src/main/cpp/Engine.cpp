@@ -343,6 +343,21 @@ Java_com_google_android_filament_Engine_nIsValidMaterial(JNIEnv*, jclass,
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_Engine_nIsValidMaterialInstance(JNIEnv*, jclass,
+        jlong nativeEngine, jlong nativeMaterial, jlong nativeMaterialInstance) {
+    Engine* engine = (Engine *)nativeEngine;
+    return (jboolean)engine->isValid((Material*)nativeMaterial,
+            (MaterialInstance*)nativeMaterialInstance);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+        Java_com_google_android_filament_Engine_nIsValidExpensiveMaterialInstance(JNIEnv*, jclass,
+        jlong nativeEngine, jlong nativeMaterialInstance) {
+    Engine* engine = (Engine *)nativeEngine;
+    return (jboolean)engine->isValidExpensive((MaterialInstance*)nativeMaterialInstance);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_google_android_filament_Engine_nIsValidSkybox(JNIEnv*, jclass,
         jlong nativeEngine, jlong nativeSkybox) {
     Engine* engine = (Engine *)nativeEngine;
@@ -389,6 +404,27 @@ Java_com_google_android_filament_Engine_nFlush(JNIEnv*, jclass,
         jlong nativeEngine) {
     Engine* engine = (Engine*) nativeEngine;
     engine->flush();
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_Engine_nIsPaused(JNIEnv*, jclass,
+        jlong nativeEngine) {
+    Engine* engine = (Engine*) nativeEngine;
+    return (jboolean)engine->isPaused();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Engine_nSetPaused(JNIEnv*, jclass,
+        jlong nativeEngine, jboolean paused) {
+    Engine* engine = (Engine*) nativeEngine;
+    engine->setPaused(paused);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Engine_nUnprotected(JNIEnv*, jclass,
+        jlong nativeEngine, jboolean paused) {
+    Engine* engine = (Engine*) nativeEngine;
+    engine->unprotected();
 }
 
 // Managers...
@@ -487,7 +523,10 @@ extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBu
         jlong jobSystemThreadCount,
         jlong textureUseAfterFreePoolSize, jboolean disableParallelShaderCompile,
         jint stereoscopicType, jlong stereoscopicEyeCount,
-        jlong resourceAllocatorCacheSizeMB, jlong resourceAllocatorCacheMaxAge) {
+        jlong resourceAllocatorCacheSizeMB, jlong resourceAllocatorCacheMaxAge,
+        jboolean disableHandleUseAfterFreeCheck,
+        jint preferredShaderLanguage,
+        jboolean forceGLES2Context) {
     Engine::Builder* builder = (Engine::Builder*) nativeBuilder;
     Engine::Config config = {
             .commandBufferSizeMB = (uint32_t) commandBufferSizeMB,
@@ -502,6 +541,9 @@ extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBu
             .stereoscopicEyeCount = (uint8_t) stereoscopicEyeCount,
             .resourceAllocatorCacheSizeMB = (uint32_t) resourceAllocatorCacheSizeMB,
             .resourceAllocatorCacheMaxAge = (uint8_t) resourceAllocatorCacheMaxAge,
+            .disableHandleUseAfterFreeCheck = (bool) disableHandleUseAfterFreeCheck,
+            .preferredShaderLanguage = (Engine::Config::ShaderLanguage) preferredShaderLanguage,
+            .forceGLES2Context = (bool) forceGLES2Context,
     };
     builder->config(&config);
 }
@@ -518,8 +560,20 @@ extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBu
     builder->sharedContext((void*) sharedContext);
 }
 
+extern "C" JNIEXPORT void JNICALL Java_com_google_android_filament_Engine_nSetBuilderPaused(
+        JNIEnv*, jclass, jlong nativeBuilder, jboolean paused) {
+    Engine::Builder* builder = (Engine::Builder*) nativeBuilder;
+    builder->paused((bool) paused);
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_google_android_filament_Engine_nBuilderBuild(JNIEnv*, jclass, jlong nativeBuilder) {
     Engine::Builder* builder = (Engine::Builder*) nativeBuilder;
     return (jlong) builder->build();
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_google_android_filament_Engine_getSteadyClockTimeNano(JNIEnv *env, jclass clazz) {
+    return (jlong)Engine::getSteadyClockTimeNano();
 }

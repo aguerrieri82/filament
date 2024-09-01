@@ -35,83 +35,23 @@ namespace filament {
 
 using namespace backend;
 
-FMaterialInstance::FMaterialInstance() noexcept
-        : mCulling(CullingMode::BACK),
+FMaterialInstance::FMaterialInstance(FEngine& engine, FMaterial const* material) noexcept
+        : mMaterial(material),
+          mCulling(CullingMode::BACK),
           mDepthFunc(RasterState::DepthFunc::LE),
           mColorWrite(false),
           mDepthWrite(false),
           mHasScissor(false),
           mIsDoubleSided(false),
           mTransparencyMode(TransparencyMode::DEFAULT) {
-}
-
-FMaterialInstance::FMaterialInstance(FEngine& engine,
-        FMaterialInstance const* other, const char* name)
-        : mMaterial(other->mMaterial),
-          mPolygonOffset(other->mPolygonOffset),
-          mStencilState(other->mStencilState),
-          mMaskThreshold(other->mMaskThreshold),
-          mSpecularAntiAliasingVariance(other->mSpecularAntiAliasingVariance),
-          mSpecularAntiAliasingThreshold(other->mSpecularAntiAliasingThreshold),
-          mCulling(other->mCulling),
-          mDepthFunc(other->mDepthFunc),
-          mColorWrite(other->mColorWrite),
-          mDepthWrite(other->mDepthWrite),
-          mHasScissor(false),
-          mIsDoubleSided(other->mIsDoubleSided),
-          mScissorRect(other->mScissorRect),
-          mName(name ? CString(name) : other->mName) {
 
     FEngine::DriverApi& driver = engine.getDriverApi();
-    FMaterial const* const material = other->getMaterial();
-
-    if (!material->getUniformInterfaceBlock().isEmpty()) {
-        mUniforms.setUniforms(other->getUniformBuffer());
-        mUbHandle = driver.createBufferObject(mUniforms.getSize(),
-                BufferObjectBinding::UNIFORM, backend::BufferUsage::DYNAMIC);
-    }
-
-    if (!material->getSamplerInterfaceBlock().isEmpty()) {
-        mSamplers = other->getSamplerGroup();
-        mSbHandle = driver.createSamplerGroup(
-                mSamplers.getSize(), utils::FixedSizeString<32>(mMaterial->getName().c_str_safe()));
-    }
-
-    if (material->hasDoubleSidedCapability()) {
-        setDoubleSided(mIsDoubleSided);
-    }
-
-    if (material->getBlendingMode() == BlendingMode::MASKED) {
-        setMaskThreshold(mMaskThreshold);
-    }
-
-    if (material->hasSpecularAntiAliasing()) {
-        setSpecularAntiAliasingThreshold(mSpecularAntiAliasingThreshold);
-        setSpecularAntiAliasingVariance(mSpecularAntiAliasingVariance);
-    }
-
-    setTransparencyMode(material->getTransparencyMode());
-
-    mMaterialSortingKey = RenderPass::makeMaterialSortingKey(
-            material->getId(), material->generateMaterialInstanceId());
-}
-
-FMaterialInstance* FMaterialInstance::duplicate(
-        FMaterialInstance const* other, const char* name) noexcept {
-    FMaterial const* const material = other->getMaterial();
-    FEngine& engine = material->getEngine();
-    return engine.createMaterialInstance(material, other, name);
-}
-
-void FMaterialInstance::initDefaultInstance(FEngine& engine, FMaterial const* material) {
-    FEngine::DriverApi& driver = engine.getDriverApi();
-
-    mMaterial = material;
 
     if (!material->getUniformInterfaceBlock().isEmpty()) {
         mUniforms = UniformBuffer(material->getUniformInterfaceBlock().getSize());
         mUbHandle = driver.createBufferObject(mUniforms.getSize(),
                 BufferObjectBinding::UNIFORM, backend::BufferUsage::STATIC);
+        driver.setDebugTag(mUbHandle.getId(), material->getName());
     }
 
     if (!material->getSamplerInterfaceBlock().isEmpty()) {
@@ -151,6 +91,65 @@ void FMaterialInstance::initDefaultInstance(FEngine& engine, FMaterial const* ma
     }
 
     setTransparencyMode(material->getTransparencyMode());
+}
+
+FMaterialInstance::FMaterialInstance(FEngine& engine,
+        FMaterialInstance const* other, const char* name)
+        : mMaterial(other->mMaterial),
+          mPolygonOffset(other->mPolygonOffset),
+          mStencilState(other->mStencilState),
+          mMaskThreshold(other->mMaskThreshold),
+          mSpecularAntiAliasingVariance(other->mSpecularAntiAliasingVariance),
+          mSpecularAntiAliasingThreshold(other->mSpecularAntiAliasingThreshold),
+          mCulling(other->mCulling),
+          mDepthFunc(other->mDepthFunc),
+          mColorWrite(other->mColorWrite),
+          mDepthWrite(other->mDepthWrite),
+          mHasScissor(false),
+          mIsDoubleSided(other->mIsDoubleSided),
+          mScissorRect(other->mScissorRect),
+          mName(name ? CString(name) : other->mName) {
+
+    FEngine::DriverApi& driver = engine.getDriverApi();
+    FMaterial const* const material = other->getMaterial();
+
+    if (!material->getUniformInterfaceBlock().isEmpty()) {
+        mUniforms.setUniforms(other->getUniformBuffer());
+        mUbHandle = driver.createBufferObject(mUniforms.getSize(),
+                BufferObjectBinding::UNIFORM, backend::BufferUsage::DYNAMIC);
+        driver.setDebugTag(mUbHandle.getId(), material->getName());
+    }
+
+    if (!material->getSamplerInterfaceBlock().isEmpty()) {
+        mSamplers = other->getSamplerGroup();
+        mSbHandle = driver.createSamplerGroup(
+                mSamplers.getSize(), utils::FixedSizeString<32>(mMaterial->getName().c_str_safe()));
+    }
+
+    if (material->hasDoubleSidedCapability()) {
+        setDoubleSided(mIsDoubleSided);
+    }
+
+    if (material->getBlendingMode() == BlendingMode::MASKED) {
+        setMaskThreshold(mMaskThreshold);
+    }
+
+    if (material->hasSpecularAntiAliasing()) {
+        setSpecularAntiAliasingThreshold(mSpecularAntiAliasingThreshold);
+        setSpecularAntiAliasingVariance(mSpecularAntiAliasingVariance);
+    }
+
+    setTransparencyMode(material->getTransparencyMode());
+
+    mMaterialSortingKey = RenderPass::makeMaterialSortingKey(
+            material->getId(), material->generateMaterialInstanceId());
+}
+
+FMaterialInstance* FMaterialInstance::duplicate(
+        FMaterialInstance const* other, const char* name) noexcept {
+    FMaterial const* const material = other->getMaterial();
+    FEngine& engine = material->getEngine();
+    return engine.createMaterialInstance(material, other, name);
 }
 
 FMaterialInstance::~FMaterialInstance() noexcept = default;

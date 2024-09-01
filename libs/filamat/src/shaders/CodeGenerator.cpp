@@ -17,6 +17,7 @@
 #include "CodeGenerator.h"
 
 #include "MaterialInfo.h"
+#include "../PushConstantDefinitions.h"
 
 #include "generated/shaders.h"
 
@@ -77,6 +78,8 @@ utils::io::sstream& CodeGenerator::generateProlog(utils::io::sstream& out, Shade
                 case StereoscopicType::MULTIVIEW:
                     out << "#extension GL_OVR_multiview2 : require\n";
                     break;
+                case StereoscopicType::NONE:
+                    break;
                 }
             }
             break;
@@ -98,6 +101,8 @@ utils::io::sstream& CodeGenerator::generateProlog(utils::io::sstream& out, Shade
                 case StereoscopicType::MULTIVIEW:
                     out << "#extension GL_OVR_multiview2 : require\n";
                     break;
+                case StereoscopicType::NONE:
+                    break;
                 }
             }
             break;
@@ -118,6 +123,8 @@ utils::io::sstream& CodeGenerator::generateProlog(utils::io::sstream& out, Shade
             break;
         case StereoscopicType::MULTIVIEW:
             out << "layout(num_views = " << material.stereoscopicEyeCount << ") in;\n";
+            break;
+        case StereoscopicType::NONE:
             break;
         }
     }
@@ -215,6 +222,8 @@ utils::io::sstream& CodeGenerator::generateProlog(utils::io::sstream& out, Shade
         break;
     case StereoscopicType::MULTIVIEW:
         generateDefine(out, "FILAMENT_STEREO_MULTIVIEW", true);
+        break;
+    case StereoscopicType::NONE:
         break;
     }
 
@@ -322,6 +331,9 @@ utils::io::sstream& CodeGenerator::generateProlog(utils::io::sstream& out, Shade
 
     generateSpecializationConstant(out, "CONFIG_STEREO_EYE_COUNT",
             +ReservedSpecializationConstants::CONFIG_STEREO_EYE_COUNT, material.stereoscopicEyeCount);
+
+    generateSpecializationConstant(out, "CONFIG_SH_BANDS_COUNT",
+            +ReservedSpecializationConstants::CONFIG_SH_BANDS_COUNT, 3);
 
     // CONFIG_MAX_STEREOSCOPIC_EYES is used to size arrays and on Adreno GPUs + vulkan, this has to
     // be explicitly, statically defined (as in #define). Otherwise (using const int for
@@ -439,23 +451,28 @@ io::sstream& CodeGenerator::generatePostProcessMain(io::sstream& out, ShaderStag
 }
 
 io::sstream& CodeGenerator::generateVariable(io::sstream& out, ShaderStage stage,
-        const CString& name, size_t index) {
-
+        const MaterialBuilder::CustomVariable& variable, size_t index) {
+    auto const& name = variable.name;
+    const char* precisionString = getPrecisionQualifier(variable.precision);
     if (!name.empty()) {
         if (stage == ShaderStage::VERTEX) {
             out << "\n#define VARIABLE_CUSTOM" << index << " " << name.c_str() << "\n";
             out << "\n#define VARIABLE_CUSTOM_AT" << index << " variable_" << name.c_str() << "\n";
-            out << "LAYOUT_LOCATION(" << index << ") VARYING vec4 variable_" << name.c_str() << ";\n";
+            out << "LAYOUT_LOCATION(" << index << ") VARYING " << precisionString << " vec4 variable_" << name.c_str() << ";\n";
         } else if (stage == ShaderStage::FRAGMENT) {
-            out << "\nLAYOUT_LOCATION(" << index << ") VARYING highp vec4 variable_" << name.c_str() << ";\n";
+            if (!variable.hasPrecision && variable.precision == Precision::DEFAULT) {
+                // for backward compatibility
+                precisionString = "highp";
+            }
+            out << "\nLAYOUT_LOCATION(" << index << ") VARYING " << precisionString << " vec4 variable_" << name.c_str() << ";\n";
         }
     }
     return out;
 }
 
 io::sstream& CodeGenerator::generateShaderInputs(io::sstream& out, ShaderStage type,
-        const AttributeBitset& attributes, Interpolation interpolation) const {
-
+        const AttributeBitset& attributes, Interpolation interpolation,
+        MaterialBuilder::PushConstantList const& pushConstants) const {
     auto const& attributeDatabase = MaterialBuilder::getAttributeDatabase();
 
     const char* shading = getInterpolationQualifier(interpolation);
@@ -479,6 +496,9 @@ io::sstream& CodeGenerator::generateShaderInputs(io::sstream& out, ShaderStage t
             }
             out << getTypeName(attribute.type) << " " << attribute.getAttributeName() << ";\n";
         });
+
+        out << "\n";
+        generatePushConstants(out, pushConstants, attributes.size());
     }
 
     out << "\n";
@@ -906,6 +926,41 @@ utils::io::sstream& CodeGenerator::generateSpecializationConstant(utils::io::sst
     return out;
 }
 
+utils::io::sstream& CodeGenerator::generatePushConstants(utils::io::sstream& out,
+        MaterialBuilder::PushConstantList const& pushConstants, size_t const layoutLocation) const {
+    static constexpr char const* STRUCT_NAME = "Constants";
+
+    bool const outputSpirv =
+            mTargetLanguage == TargetLanguage::SPIRV && mTargetApi != TargetApi::OPENGL;
+    auto const getType = [](ConstantType const& type) {
+        switch (type) {
+            case ConstantType::BOOL:
+                return "bool";
+            case ConstantType::INT:
+                return "int";
+            case ConstantType::FLOAT:
+                return "float";
+        }
+    };
+    if (outputSpirv) {
+        out << "layout(push_constant) uniform " << STRUCT_NAME << " {\n ";
+    } else {
+        out << "struct " << STRUCT_NAME << " {\n";
+    }
+
+    for (auto const& constant: pushConstants) {
+        out << getType(constant.type) << " " << constant.name.c_str() << ";\n";
+    }
+
+    if (outputSpirv) {
+        out << "} " << PUSH_CONSTANT_STRUCT_VAR_NAME << ";\n";
+    } else {
+        out << "};\n";
+        out << "LAYOUT_LOCATION(" << static_cast<int>(layoutLocation) << ") uniform " << STRUCT_NAME
+            << " " << PUSH_CONSTANT_STRUCT_VAR_NAME << ";\n";
+    }
+    return out;
+}
 
 io::sstream& CodeGenerator::generateMaterialProperty(io::sstream& out,
         MaterialBuilder::Property property, bool isSet) {
@@ -1115,32 +1170,35 @@ io::sstream& CodeGenerator::generateShaderReflections(utils::io::sstream& out, S
 char const* CodeGenerator::getConstantName(MaterialBuilder::Property property) noexcept {
     using Property = MaterialBuilder::Property;
     switch (property) {
-        case Property::BASE_COLOR:           return "BASE_COLOR";
-        case Property::ROUGHNESS:            return "ROUGHNESS";
-        case Property::METALLIC:             return "METALLIC";
-        case Property::REFLECTANCE:          return "REFLECTANCE";
-        case Property::AMBIENT_OCCLUSION:    return "AMBIENT_OCCLUSION";
-        case Property::CLEAR_COAT:           return "CLEAR_COAT";
-        case Property::CLEAR_COAT_ROUGHNESS: return "CLEAR_COAT_ROUGHNESS";
-        case Property::CLEAR_COAT_NORMAL:    return "CLEAR_COAT_NORMAL";
-        case Property::ANISOTROPY:           return "ANISOTROPY";
-        case Property::ANISOTROPY_DIRECTION: return "ANISOTROPY_DIRECTION";
-        case Property::THICKNESS:            return "THICKNESS";
-        case Property::SUBSURFACE_POWER:     return "SUBSURFACE_POWER";
-        case Property::SUBSURFACE_COLOR:     return "SUBSURFACE_COLOR";
-        case Property::SHEEN_COLOR:          return "SHEEN_COLOR";
-        case Property::SHEEN_ROUGHNESS:      return "SHEEN_ROUGHNESS";
-        case Property::GLOSSINESS:           return "GLOSSINESS";
-        case Property::SPECULAR_COLOR:       return "SPECULAR_COLOR";
-        case Property::EMISSIVE:             return "EMISSIVE";
-        case Property::NORMAL:               return "NORMAL";
-        case Property::POST_LIGHTING_COLOR:  return "POST_LIGHTING_COLOR";
-        case Property::CLIP_SPACE_TRANSFORM: return "CLIP_SPACE_TRANSFORM";
-        case Property::ABSORPTION:           return "ABSORPTION";
-        case Property::TRANSMISSION:         return "TRANSMISSION";
-        case Property::IOR:                  return "IOR";
-        case Property::MICRO_THICKNESS:      return "MICRO_THICKNESS";
-        case Property::BENT_NORMAL:          return "BENT_NORMAL";
+        case Property::BASE_COLOR:                  return "BASE_COLOR";
+        case Property::ROUGHNESS:                   return "ROUGHNESS";
+        case Property::METALLIC:                    return "METALLIC";
+        case Property::REFLECTANCE:                 return "REFLECTANCE";
+        case Property::AMBIENT_OCCLUSION:           return "AMBIENT_OCCLUSION";
+        case Property::CLEAR_COAT:                  return "CLEAR_COAT";
+        case Property::CLEAR_COAT_ROUGHNESS:        return "CLEAR_COAT_ROUGHNESS";
+        case Property::CLEAR_COAT_NORMAL:           return "CLEAR_COAT_NORMAL";
+        case Property::ANISOTROPY:                  return "ANISOTROPY";
+        case Property::ANISOTROPY_DIRECTION:        return "ANISOTROPY_DIRECTION";
+        case Property::THICKNESS:                   return "THICKNESS";
+        case Property::SUBSURFACE_POWER:            return "SUBSURFACE_POWER";
+        case Property::SUBSURFACE_COLOR:            return "SUBSURFACE_COLOR";
+        case Property::SHEEN_COLOR:                 return "SHEEN_COLOR";
+        case Property::SHEEN_ROUGHNESS:             return "SHEEN_ROUGHNESS";
+        case Property::GLOSSINESS:                  return "GLOSSINESS";
+        case Property::SPECULAR_COLOR:              return "SPECULAR_COLOR";
+        case Property::EMISSIVE:                    return "EMISSIVE";
+        case Property::NORMAL:                      return "NORMAL";
+        case Property::POST_LIGHTING_COLOR:         return "POST_LIGHTING_COLOR";
+        case Property::POST_LIGHTING_MIX_FACTOR:    return "POST_LIGHTING_MIX_FACTOR";
+        case Property::CLIP_SPACE_TRANSFORM:        return "CLIP_SPACE_TRANSFORM";
+        case Property::ABSORPTION:                  return "ABSORPTION";
+        case Property::TRANSMISSION:                return "TRANSMISSION";
+        case Property::IOR:                         return "IOR";
+        case Property::MICRO_THICKNESS:             return "MICRO_THICKNESS";
+        case Property::BENT_NORMAL:                 return "BENT_NORMAL";
+        case Property::SPECULAR_FACTOR:             return "SPECULAR_FACTOR";
+        case Property::SPECULAR_COLOR_FACTOR:       return "SPECULAR_COLOR_FACTOR";
     }
 }
 

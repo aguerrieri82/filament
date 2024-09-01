@@ -23,6 +23,7 @@
 #include "VulkanResources.h"
 #include "VulkanImageUtility.h"
 
+#include <utils/Hash.h>
 #include <utils/RangeMap.h>
 
 #include <unordered_map>
@@ -71,6 +72,10 @@ struct VulkanTexture : public HwTexture, VulkanResource {
     // target attachment.  Unlike the primary image view, this always has type VK_IMAGE_VIEW_TYPE_2D
     // and the identity swizzle.
     VkImageView getAttachmentView(VkImageSubresourceRange range);
+
+    // Gets or creates a cached VkImageView for a single subresource that can be used as a render
+    // target attachment when rendering with multiview.
+    VkImageView getMultiviewAttachmentView(VkImageSubresourceRange range);
 
     // This is a workaround for the first few frames where we're waiting for the texture to actually
     // be uploaded.  In that case, we bind the sampler to an empty texture, but the corresponding

@@ -49,16 +49,17 @@ void NoopDriver::terminate() {
 void NoopDriver::tick(int) {
 }
 
-void NoopDriver::beginFrame(int64_t monotonic_clock_ns, uint32_t frameId) {
+void NoopDriver::beginFrame(int64_t monotonic_clock_ns,
+        int64_t refreshIntervalNs, uint32_t frameId) {
 }
 
 void NoopDriver::setFrameScheduledCallback(Handle<HwSwapChain> sch,
-        FrameScheduledCallback callback, void* user) {
+        CallbackHandler* handler, FrameScheduledCallback&& callback) {
 
 }
 
 void NoopDriver::setFrameCompletedCallback(Handle<HwSwapChain> sch,
-        CallbackHandler* handler, CallbackHandler::Callback callback, void* user) {
+        CallbackHandler* handler, utils::Invocable<void(void)>&& callback) {
 
 }
 
@@ -181,7 +182,7 @@ bool NoopDriver::isProtectedContentSupported() {
     return false;
 }
 
-bool NoopDriver::isStereoSupported(backend::StereoscopicType) {
+bool NoopDriver::isStereoSupported() {
     return false;
 }
 
@@ -193,8 +194,16 @@ bool NoopDriver::isDepthStencilResolveSupported() {
     return true;
 }
 
+bool NoopDriver::isDepthStencilBlitSupported(TextureFormat format) {
+    return true;
+}
+
 bool NoopDriver::isProtectedTexturesSupported() {
     return true;
+}
+
+bool NoopDriver::isDepthClampSupported() {
+    return false;
 }
 
 bool NoopDriver::isWorkaroundNeeded(Workaround) {
@@ -307,10 +316,14 @@ void NoopDriver::unbindBuffer(BufferObjectBinding bindingType, uint32_t index) {
 void NoopDriver::bindSamplers(uint32_t index, Handle<HwSamplerGroup> sbh) {
 }
 
-void NoopDriver::insertEventMarker(char const* string, uint32_t len) {
+void NoopDriver::setPushConstant(backend::ShaderStage stage, uint8_t index,
+        backend::PushConstantVariant value) {
 }
 
-void NoopDriver::pushGroupMarker(char const* string,  uint32_t len) {
+void NoopDriver::insertEventMarker(char const* string) {
+}
+
+void NoopDriver::pushGroupMarker(char const* string) {
 }
 
 void NoopDriver::popGroupMarker(int) {
@@ -350,6 +363,15 @@ void NoopDriver::blit(
         math::uint2 size) {
 }
 
+void NoopDriver::bindPipeline(PipelineState const& pipelineState) {
+}
+
+void NoopDriver::bindRenderPrimitive(Handle<HwRenderPrimitive> rph) {
+}
+
+void NoopDriver::draw2(uint32_t indexOffset, uint32_t indexCount, uint32_t instanceCount) {
+}
+
 void NoopDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> rph,
         uint32_t indexOffset, uint32_t indexCount, uint32_t instanceCount) {
 }
@@ -368,6 +390,9 @@ void NoopDriver::endTimerQuery(Handle<HwTimerQuery> tqh) {
 }
 
 void NoopDriver::resetState(int) {
+}
+
+void NoopDriver::setDebugTag(HandleBase::HandleId handleId, utils::CString tag) {
 }
 
 } // namespace filament

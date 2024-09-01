@@ -231,8 +231,11 @@ private:
     void setParameterImpl(std::string_view name,
             FTexture const* texture, TextureSampler const& sampler);
 
-    FMaterialInstance() noexcept;
-    void initDefaultInstance(FEngine& engine, FMaterial const* material);
+    template<typename T>
+    T getParameterImpl(std::string_view name) const;
+
+    // initialize the default instance
+    FMaterialInstance(FEngine& engine, FMaterial const* material) noexcept;
 
     void commitSlow(FEngine::DriverApi& driver) const;
 

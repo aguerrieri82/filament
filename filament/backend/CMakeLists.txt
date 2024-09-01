@@ -66,11 +66,13 @@ set(PRIVATE_HDRS
 # OpenGL / OpenGL ES Sources
 # ==================================================================================================
 
-if (FILAMENT_SUPPORTS_OPENGL AND NOT FILAMENT_USE_EXTERNAL_GLES3 AND NOT FILAMENT_USE_SWIFTSHADER)
+if (FILAMENT_SUPPORTS_OPENGL AND NOT FILAMENT_USE_EXTERNAL_GLES3)
     list(APPEND SRCS
             include/backend/platforms/OpenGLPlatform.h
             src/opengl/gl_headers.cpp
             src/opengl/gl_headers.h
+            src/opengl/GLBufferObject.h
+            src/opengl/GLTexture.h
             src/opengl/GLUtils.cpp
             src/opengl/GLUtils.h
             src/opengl/OpenGLBlobCache.cpp
@@ -166,8 +168,10 @@ endif()
 if (FILAMENT_SUPPORTS_VULKAN)
     list(APPEND SRCS
             include/backend/platforms/VulkanPlatform.h
-            src/vulkan/caching/VulkanDescriptorSet.cpp
-            src/vulkan/caching/VulkanDescriptorSet.h
+            src/vulkan/caching/VulkanDescriptorSetManager.cpp
+            src/vulkan/caching/VulkanDescriptorSetManager.h
+            src/vulkan/caching/VulkanPipelineLayoutCache.cpp
+            src/vulkan/caching/VulkanPipelineLayoutCache.h
             src/vulkan/platform/VulkanPlatform.cpp
             src/vulkan/platform/VulkanPlatformSwapChainImpl.cpp
             src/vulkan/platform/VulkanPlatformSwapChainImpl.h
@@ -413,7 +417,9 @@ if (APPLE OR LINUX)
         test/test_MissingRequiredAttributes.cpp
         test/test_ReadPixels.cpp
         test/test_BufferUpdates.cpp
+        test/test_Callbacks.cpp
         test/test_MRT.cpp
+        test/test_PushConstants.cpp
         test/test_LoadImage.cpp
         test/test_StencilBuffer.cpp
         test/test_Scissor.cpp
@@ -474,6 +480,10 @@ if (APPLE)
        # linker from removing "unused" symbols.
        target_link_libraries(backend_test_mac PRIVATE -force_load backend_test)
        set_target_properties(backend_test_mac PROPERTIES FOLDER Tests)
+
+       # This is needed after XCode 15.3
+       set_target_properties(backend_test_mac PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
+       set_target_properties(backend_test_mac PROPERTIES INSTALL_RPATH /usr/local/lib)
     endif()
 endif()
 

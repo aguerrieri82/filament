@@ -41,6 +41,7 @@
 #include "details/Material.h"
 #include "details/MaterialInstance.h"
 #include "details/Texture.h"
+#include "details/VertexBuffer.h"
 
 #include "generated/resources/materials.h"
 
@@ -190,8 +191,9 @@ std::pair<backend::PipelineState, backend::Viewport>
     FMaterial* const material = getMaterial(engine);
     material->prepareProgram(Variant{ variantKey });
     return {{
-                    .program = material->getProgram(Variant{ variantKey }),
-                    .rasterState = material->getRasterState() },
+            .program = material->getProgram(Variant{ variantKey }),
+            .vertexBufferInfo = engine.getFullScreenVertexBuffer()->getVertexBufferInfoHandle(),
+            .rasterState = material->getRasterState() },
             material->getDefaultInstance()->getScissor() };
 }
 
@@ -263,6 +265,7 @@ static const PostProcessManager::MaterialInfo sMaterialList[] = {
         { "bilateralBlur",              MATERIAL(BILATERALBLUR) },
         { "bilateralBlurBentNormals",   MATERIAL(BILATERALBLURBENTNORMALS) },
         { "blitArray",                  MATERIAL(BLITARRAY) },
+        { "blitDepth",                  MATERIAL(BLITDEPTH) },
         { "bloomDownsample",            MATERIAL(BLOOMDOWNSAMPLE) },
         { "bloomDownsample2x",          MATERIAL(BLOOMDOWNSAMPLE2X) },
         { "bloomDownsample9",           MATERIAL(BLOOMDOWNSAMPLE9) },
@@ -338,19 +341,22 @@ void PostProcessManager::init() noexcept {
         }
     }
 
-    mStarburstTexture = driver.createTexture(SamplerType::SAMPLER_2D, 1,
-            TextureFormat::R8, 1, 256, 1, 1, TextureUsage::DEFAULT);
+    if (engine.hasFeatureLevel(FeatureLevel::FEATURE_LEVEL_1)) {
+        mStarburstTexture = driver.createTexture(SamplerType::SAMPLER_2D, 1,
+                TextureFormat::R8, 1, 256, 1, 1, TextureUsage::DEFAULT);
 
-    PixelBufferDescriptor dataStarburst(driver.allocate(256), 256, PixelDataFormat::R, PixelDataType::UBYTE);
-    std::generate_n((uint8_t*)dataStarburst.buffer, 256,
-            [&dist = mUniformDistribution, &gen = mEngine.getRandomEngine()]() {
-        float const r = 0.5f + 0.5f * dist(gen);
-        return uint8_t(r * 255.0f);
-    });
+        PixelBufferDescriptor dataStarburst(driver.allocate(256), 256,
+                PixelDataFormat::R, PixelDataType::UBYTE);
+        std::generate_n((uint8_t*)dataStarburst.buffer, 256,
+                [&dist = mUniformDistribution, &gen = mEngine.getRandomEngine()]() {
+                    float const r = 0.5f + 0.5f * dist(gen);
+                    return uint8_t(r * 255.0f);
+                });
 
-    driver.update3DImage(mStarburstTexture,
-            0, 0, 0, 0, 256, 1, 1,
-            std::move(dataStarburst));
+        driver.update3DImage(mStarburstTexture,
+                0, 0, 0, 0, 256, 1, 1,
+                std::move(dataStarburst));
+    }
 }
 
 void PostProcessManager::terminate(DriverApi& driver) noexcept {
@@ -448,11 +454,8 @@ PostProcessManager::StructurePassOutput PostProcessManager::structure(FrameGraph
                         .levels = uint8_t(levelCount),
                         .format = isES2 ? TextureFormat::DEPTH24 : TextureFormat::DEPTH32F });
 
-                // workaround: since we have levels, this implies SAMPLEABLE (because of the gl
-                // backend, which implements non-sampleables with renderbuffers, which don't have levels).
-                // (should the gl driver revert to textures, in that case?)
                 data.depth = builder.write(data.depth,
-                        FrameGraphTexture::Usage::DEPTH_ATTACHMENT | FrameGraphTexture::Usage::SAMPLEABLE);
+                        FrameGraphTexture::Usage::DEPTH_ATTACHMENT);
 
                 if (config.picking) {
                     data.picking = builder.createTexture("Picking Buffer", {
@@ -491,7 +494,6 @@ PostProcessManager::StructurePassOutput PostProcessManager::structure(FrameGraph
 
     struct StructureMipmapData {
         FrameGraphId<FrameGraphTexture> depth;
-        uint32_t rt[8];
     };
 
     fg.addPass<StructureMipmapData>("StructureMipmap",
@@ -502,7 +504,7 @@ PostProcessManager::StructurePassOutput PostProcessManager::structure(FrameGraph
                             .level = uint8_t(i)
                     });
                     out = builder.write(out, FrameGraphTexture::Usage::DEPTH_ATTACHMENT);
-                    data.rt[i - 1] = builder.declareRenderPass("Structure mip target", {
+                    builder.declareRenderPass("Structure mip target", {
                             .attachments = { .depth = out }
                     });
                 }
@@ -721,46 +723,16 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOcclusion(
      * attachment, even if writes are not enabled. This restriction is lifted on desktop GL and
      * Vulkan. The Metal situation is unclear.
      * In this case, we need to duplicate the depth texture to use it as an attachment.
-     * The pass below that does this is automatically culled if not needed, which is decided by
-     * each backend.
+     *
+     * This is also needed in Vulkan for a similar reason.
      */
+    FrameGraphId<FrameGraphTexture> duplicateDepthOutput = {};
+    if (!mWorkaroundAllowReadOnlyAncillaryFeedbackLoop) {
+        duplicateDepthOutput = blitDepth(fg, depth);
+    }
 
-    struct DuplicateDepthPassData {
-        FrameGraphId<FrameGraphTexture> input;
-        FrameGraphId<FrameGraphTexture> output;
-    };
-
-    // Needed for Vulkan and GLES. Some GLES implementations don't need it. Never needed for Metal.
-    auto& duplicateDepthPass = fg.addPass<DuplicateDepthPassData>("Duplicate Depth Pass",
-            [&](FrameGraph::Builder& builder, auto& data) {
-                data.input = builder.read(depth,
-                        FrameGraphTexture::Usage::BLIT_SRC);
-
-                auto desc = builder.getDescriptor(data.input);
-                desc.levels = 1; // only copy the base level
-
-                // create a new buffer for the copy
-                data.output = builder.createTexture("Depth Texture Copy", desc);
-
-                // output is an attachment
-                data.output = builder.write(data.output,
-                        FrameGraphTexture::Usage::BLIT_DST);
-            },
-            [=](FrameGraphResources const& resources, auto const& data, DriverApi& driver) {
-                auto const& src = resources.getTexture(data.input);
-                auto const& dst = resources.getTexture(data.output);
-                auto const& srcSubDesc = resources.getSubResourceDescriptor(data.input);
-                auto const& dstSubDesc = resources.getSubResourceDescriptor(data.output);
-                auto const& desc = resources.getDescriptor(data.output);
-                assert_invariant(desc.samples == resources.getDescriptor(data.input).samples);
-                // here we can guarantee that src and dst format and size match, by construction.
-                driver.blit(
-                        dst, dstSubDesc.level, dstSubDesc.layer, { 0, 0 },
-                        src, srcSubDesc.level, srcSubDesc.layer, { 0, 0 },
-                        { desc.width, desc.height });
-            });
-
-    auto& SSAOPass = fg.addPass<SSAOPassData>("SSAO Pass",
+    auto& SSAOPass = fg.addPass<SSAOPassData>(
+            "SSAO Pass",
             [&](FrameGraph::Builder& builder, auto& data) {
                 auto const& desc = builder.getDescriptor(depth);
 
@@ -789,10 +761,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOcclusion(
                 // reading into it even though they were not written in the depth buffer.
                 // The bilateral filter in the blur pass will ignore pixels at infinity.
 
-                auto depthAttachment = data.depth;
-                if (!mWorkaroundAllowReadOnlyAncillaryFeedbackLoop) {
-                    depthAttachment = duplicateDepthPass->output;
-                }
+                auto depthAttachment = duplicateDepthOutput ? duplicateDepthOutput : data.depth;
 
                 depthAttachment = builder.read(depthAttachment,
                         FrameGraphTexture::Usage::DEPTH_ATTACHMENT);
@@ -802,8 +771,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::screenSpaceAmbientOcclusion(
                         .clearFlags = TargetBufferFlags::COLOR0 | TargetBufferFlags::COLOR1
                 });
             },
-            [=](FrameGraphResources const& resources,
-                    auto const& data, DriverApi& driver) {
+            [=](FrameGraphResources const& resources, auto const& data, DriverApi& driver) {
                 auto depth = resources.getTexture(data.depth);
                 auto ssao = resources.getRenderPassInfo();
                 auto const& desc = resources.getDescriptor(data.depth);
@@ -1996,8 +1964,8 @@ PostProcessManager::BloomPassOutput PostProcessManager::bloom(FrameGraph& fg,
         // - visible bloom size changes with dynamic resolution in non-homogenous mode
         // This allows us to use the 9 sample downsampling filter (instead of 13)
         // for at least 4 levels.
-        uint32_t width  = std::max(1u, uint32_t(std::floor(bloomWidth)));
-        uint32_t height = std::max(1u, uint32_t(std::floor(bloomHeight)));
+        uint32_t width  = std::max(16u, uint32_t(std::floor(bloomWidth)));
+        uint32_t height = std::max(16u, uint32_t(std::floor(bloomHeight)));
         width  &= ~((1 << 4) - 1);  // at least 4 levels
         height &= ~((1 << 4) - 1);
         bloomWidth  = float(width);
@@ -2008,6 +1976,8 @@ PostProcessManager::BloomPassOutput PostProcessManager::bloom(FrameGraph& fg,
 
     // we don't need to do the fireflies reduction if we have TAA (it already does it)
     bool fireflies = threshold && !taaOptions.enabled;
+
+    assert_invariant(bloomWidth && bloomHeight);
 
     while (2 * bloomWidth < float(desc.width) || 2 * bloomHeight < float(desc.height)) {
         if (inoutBloomOptions.quality == QualityLevel::LOW ||
@@ -2144,6 +2114,7 @@ PostProcessManager::BloomPassOutput PostProcessManager::bloom(FrameGraph& fg,
                 mi->setParameter("source", hwOut, {
                         .filterMag = SamplerMagFilter::LINEAR,
                         .filterMin = SamplerMinFilter::LINEAR_MIPMAP_NEAREST});
+                mi->commit(driver);
                 mi->use(driver);
 
                 auto pipeline = material.getPipelineState(mEngine);
@@ -2967,9 +2938,17 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::upscale(FrameGraph& fg, bool
                         .filterMag = (dsrOptions.quality == QualityLevel::LOW) ?
                                 filter : SamplerMagFilter::LINEAR
                     });
-                    mi->setParameter("resolution",
-                            float4{ outputDesc.width, outputDesc.height,
-                                    1.0f / outputDesc.width, 1.0f / outputDesc.height });
+
+                    if (blitterNames[index] != "blitLow") {
+                        mi->setParameter("resolution",
+                                float4{outputDesc.width, outputDesc.height, 1.0f / outputDesc.width,
+                                    1.0f / outputDesc.height});
+                    }
+
+                    if (blitterNames[index] == "blitLow") {
+                        mi->setParameter("levelOfDetail", 0.0f);
+                    }
+
                     mi->setParameter("viewport", float4{
                             (float)vp.left   / inputDesc.width,
                             (float)vp.bottom / inputDesc.height,
@@ -3028,9 +3007,8 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::blit(FrameGraph& fg, bool tr
         SamplerMagFilter filterMag,
         SamplerMinFilter filterMin) noexcept {
 
-    // TODO: add support for sub-resources
-    assert_invariant(fg.getSubResourceDescriptor(input).layer == 0);
-    assert_invariant(fg.getSubResourceDescriptor(input).level == 0);
+    uint32_t const layer = fg.getSubResourceDescriptor(input).layer;
+    float const levelOfDetail = fg.getSubResourceDescriptor(input).level;
 
     struct QuadBlitData {
         FrameGraphId<FrameGraphTexture> input;
@@ -3040,7 +3018,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::blit(FrameGraph& fg, bool tr
     auto& ppQuadBlit = fg.addPass<QuadBlitData>("blitting",
             [&](FrameGraph::Builder& builder, auto& data) {
                 data.input = builder.sample(input);
-                data.output = builder.createTexture("upscaled output", outDesc);
+                data.output = builder.createTexture("blit output", outDesc);
                 data.output = builder.write(data.output,
                         FrameGraphTexture::Usage::COLOR_ATTACHMENT);
                 builder.declareRenderPass(builder.getName(data.output), {
@@ -3051,27 +3029,28 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::blit(FrameGraph& fg, bool tr
                     auto const& data, DriverApi& driver) {
                 auto color = resources.getTexture(data.input);
                 auto const& inputDesc = resources.getDescriptor(data.input);
-                auto const& outputDesc = resources.getDescriptor(data.output);
                 auto out = resources.getRenderPassInfo();
 
                 // --------------------------------------------------------------------------------
                 // set uniforms
 
-                PostProcessMaterial const& material = getPostProcessMaterial("blitLow");
+                PostProcessMaterial const& material =
+                        getPostProcessMaterial(layer ? "blitArray" : "blitLow");
                 auto* mi = material.getMaterialInstance(mEngine);
                 mi->setParameter("color", color, {
                         .filterMag = filterMag,
                         .filterMin = filterMin
                 });
-                mi->setParameter("resolution",
-                        float4{ outputDesc.width, outputDesc.height,
-                                1.0f / outputDesc.width, 1.0f / outputDesc.height });
                 mi->setParameter("viewport", float4{
                         float(vp.left)   / inputDesc.width,
                         float(vp.bottom) / inputDesc.height,
                         float(vp.width)  / inputDesc.width,
                         float(vp.height) / inputDesc.height
                 });
+                mi->setParameter("levelOfDetail", levelOfDetail);
+                if (layer) {
+                    mi->setParameter("layerIndex", layer);
+                }
                 mi->commit(driver);
                 mi->use(driver);
 
@@ -3083,6 +3062,87 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::blit(FrameGraph& fg, bool tr
                     pipeline.first.rasterState.blendFunctionDstAlpha = BlendFunction::ONE_MINUS_SRC_ALPHA;
                 }
                 render(out, pipeline, driver);
+            });
+
+    return ppQuadBlit->output;
+}
+
+FrameGraphId<FrameGraphTexture> PostProcessManager::blitDepth(FrameGraph& fg,
+        FrameGraphId<FrameGraphTexture> input) noexcept {
+    auto const& inputDesc = fg.getDescriptor(input);
+    filament::Viewport const vp = {0, 0, inputDesc.width, inputDesc.height};
+    bool const hardwareBlitSupported =
+            mEngine.getDriverApi().isDepthStencilBlitSupported(inputDesc.format);
+
+    struct BlitData {
+        FrameGraphId<FrameGraphTexture> input;
+        FrameGraphId<FrameGraphTexture> output;
+    };
+
+    if (hardwareBlitSupported) {
+        auto& depthPass = fg.addPass<BlitData>(
+                "Depth Blit",
+                [&](FrameGraph::Builder& builder, auto& data) {
+                    data.input = builder.read(input, FrameGraphTexture::Usage::BLIT_SRC);
+
+                    auto desc = builder.getDescriptor(data.input);
+                    desc.levels = 1;// only copy the base level
+
+                    // create a new buffer for the copy
+                    data.output = builder.createTexture("depth blit output", desc);
+
+                    // output is an attachment
+                    data.output = builder.write(data.output, FrameGraphTexture::Usage::BLIT_DST);
+                },
+                [=](FrameGraphResources const& resources, auto const& data, DriverApi& driver) {
+                    auto const& src = resources.getTexture(data.input);
+                    auto const& dst = resources.getTexture(data.output);
+                    auto const& srcSubDesc = resources.getSubResourceDescriptor(data.input);
+                    auto const& dstSubDesc = resources.getSubResourceDescriptor(data.output);
+                    auto const& desc = resources.getDescriptor(data.output);
+                    assert_invariant(desc.samples == resources.getDescriptor(data.input).samples);
+                    // here we can guarantee that src and dst format and size match, by
+                    // construction.
+                    driver.blit(
+                            dst, dstSubDesc.level, dstSubDesc.layer, { 0, 0 },
+                            src, srcSubDesc.level, srcSubDesc.layer, { 0, 0 },
+                            { desc.width, desc.height });
+                });
+        return depthPass->output;
+    }
+    // Otherwise, we would do a shader-based blit.
+
+    auto& ppQuadBlit = fg.addPass<BlitData>(
+            "Depth Blit (Shader)",
+            [&](FrameGraph::Builder& builder, auto& data) {
+                data.input = builder.sample(input);
+                // Note that this is a same size/format blit.
+                auto const& outputDesc = inputDesc;
+                data.output = builder.createTexture("depth blit output", outputDesc);
+                data.output =
+                        builder.write(data.output, FrameGraphTexture::Usage::DEPTH_ATTACHMENT);
+                builder.declareRenderPass(builder.getName(data.output),
+                        {.attachments = {.depth = {data.output}}});
+            },
+            [=](FrameGraphResources const& resources, auto const& data, DriverApi& driver) {
+                auto depth = resources.getTexture(data.input);
+                auto const& inputDesc = resources.getDescriptor(data.input);
+                auto out = resources.getRenderPassInfo();
+
+                // --------------------------------------------------------------------------------
+                // set uniforms
+                PostProcessMaterial const& material = getPostProcessMaterial("blitDepth");
+                auto* mi = material.getMaterialInstance(mEngine);
+                mi->setParameter("depth", depth,
+                        {
+                            .filterMag = SamplerMagFilter::NEAREST,
+                            .filterMin = SamplerMinFilter::NEAREST,
+                        });
+                mi->setParameter("viewport",
+                        float4{float(vp.left) / inputDesc.width,
+                            float(vp.bottom) / inputDesc.height, float(vp.width) / inputDesc.width,
+                            float(vp.height) / inputDesc.height});
+                commitAndRender(out, material, driver);
             });
 
     return ppQuadBlit->output;
@@ -3133,6 +3193,7 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::resolve(FrameGraph& fg,
                 assert_invariant(dst);
                 assert_invariant(srcDesc.format == dstDesc.format);
                 assert_invariant(srcDesc.width == dstDesc.width && srcDesc.height == dstDesc.height);
+                assert_invariant(srcDesc.samples > 1 && dstDesc.samples <= 1);
                 driver.resolve(
                         dst, dstSubDesc.level, dstSubDesc.layer,
                         src, srcSubDesc.level, srcSubDesc.layer);
@@ -3284,14 +3345,15 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::debugShadowCascades(FrameGra
     return debugShadowCascadePass->output;
 }
 
-FrameGraphId<FrameGraphTexture> PostProcessManager::debugCombineArrayTexture(FrameGraph& fg, 
+FrameGraphId<FrameGraphTexture> PostProcessManager::debugCombineArrayTexture(FrameGraph& fg,
     bool translucent, FrameGraphId<FrameGraphTexture> input,
     filament::Viewport const& vp, FrameGraphTexture::Descriptor const& outDesc,
     SamplerMagFilter filterMag,
     SamplerMinFilter filterMin) noexcept {
 
-    assert_invariant(fg.getDescriptor(input).depth > 1);
-    assert_invariant(fg.getDescriptor(input).type == SamplerType::SAMPLER_2D_ARRAY);
+    auto& inputTextureDesc = fg.getDescriptor(input);
+    assert_invariant(inputTextureDesc.depth > 1);
+    assert_invariant(inputTextureDesc.type == SamplerType::SAMPLER_2D_ARRAY);
 
     // TODO: add support for sub-resources
     assert_invariant(fg.getSubResourceDescriptor(input).layer == 0);
@@ -3327,14 +3389,12 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::debugCombineArrayTexture(Fra
                         .filterMag = filterMag,
                         .filterMin = filterMin
                     });
-                mi->setParameter("layerIndex", 0);
                 mi->setParameter("viewport", float4{
                         float(vp.left) / inputDesc.width,
                         float(vp.bottom) / inputDesc.height,
                         float(vp.width) / inputDesc.width,
                         float(vp.height) / inputDesc.height
                     });
-                mi->commit(driver);
                 mi->use(driver);
 
                 auto pipeline = material.getPipelineState(mEngine);
@@ -3345,18 +3405,19 @@ FrameGraphId<FrameGraphTexture> PostProcessManager::debugCombineArrayTexture(Fra
                     pipeline.first.rasterState.blendFunctionDstAlpha = BlendFunction::ONE_MINUS_SRC_ALPHA;
                 }
 
-                // Blit the scene rendered to the first layer to the left half of the screen.
-                out.params.viewport.width /= 2;
-                render(out, pipeline, driver);
+                // The width of each view takes up 1/depth of the screen width.
+                out.params.viewport.width /= inputTextureDesc.depth;
 
-                // Blit the scene rendered to the second layer to the right half of the screen.
-                // Don't clear or discard the target to keep the previously rendered left half image.
-                mi->setParameter("layerIndex", 1);
-                mi->commit(driver);
-                out.params.flags.clear = filament::backend::TargetBufferFlags::NONE;
-                out.params.flags.discardStart = filament::backend::TargetBufferFlags::NONE;
-                out.params.viewport.left += out.params.viewport.width;
-                render(out, pipeline, driver);
+                // Render all layers of the texture to the screen side-by-side.
+                for (uint32_t i = 0; i < inputTextureDesc.depth; ++i) {
+                    mi->setParameter("layerIndex", i);
+                    mi->commit(driver);
+                    render(out, pipeline, driver);
+                    // From the second draw, don't clear the targetbuffer.
+                    out.params.flags.clear = filament::backend::TargetBufferFlags::NONE;
+                    out.params.flags.discardStart = filament::backend::TargetBufferFlags::NONE;
+                    out.params.viewport.left += out.params.viewport.width;
+                }
         });
 
     return ppQuadBlit->output;

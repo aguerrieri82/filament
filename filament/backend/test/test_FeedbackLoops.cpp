@@ -160,7 +160,7 @@ TEST_F(BackendTest, FeedbackLoops) {
             slog.i << "Level " << int(level) << ": " <<
                     (kTexWidth >> level) << "x" << (kTexHeight >> level) << io::endl;
             renderTargets[level] = api.createRenderTarget( TargetBufferFlags::COLOR,
-                    kTexWidth >> level, kTexHeight >> level, 1, { texture, level, 0 }, {}, {});
+                    kTexWidth >> level, kTexHeight >> level, 1, 0, { texture, level, 0 }, {}, {});
         }
 
         // Fill the base level of the texture with interesting colors.
@@ -200,7 +200,7 @@ TEST_F(BackendTest, FeedbackLoops) {
             auto ubuffer = api.createBufferObject(sizeof(MaterialParams),
                     BufferObjectBinding::UNIFORM, BufferUsage::STATIC);
             api.makeCurrent(swapChain, swapChain);
-            api.beginFrame(0, 0);
+            api.beginFrame(0, 0, 0);
             api.bindSamplers(0, sgroup);
             api.bindUniformBuffer(0, ubuffer);
 
@@ -265,7 +265,7 @@ TEST_F(BackendTest, FeedbackLoops) {
         for (auto rt : renderTargets)  api.destroyRenderTarget(rt);
     }
 
-    const uint32_t expected = 0xe93a4a07;
+    const uint32_t expected = 0x70695aa1;
     printf("Computed hash is 0x%8.8x, Expected 0x%8.8x\n", sPixelHashResult, expected);
     EXPECT_TRUE(sPixelHashResult == expected);
 }

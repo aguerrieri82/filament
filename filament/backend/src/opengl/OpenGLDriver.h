@@ -18,31 +18,43 @@
 #define TNT_FILAMENT_BACKEND_OPENGL_OPENGLDRIVER_H
 
 #include "DriverBase.h"
-#include "GLUtils.h"
 #include "OpenGLContext.h"
 #include "OpenGLTimerQuery.h"
+#include "GLBufferObject.h"
+#include "GLTexture.h"
 #include "ShaderCompilerService.h"
-
-#include "private/backend/Driver.h"
-#include "private/backend/HandleAllocator.h"
 
 #include <backend/platforms/OpenGLPlatform.h>
 
 #include <backend/AcquiredImage.h>
+#include <backend/DriverEnums.h>
+#include <backend/Handle.h>
+#include <backend/Platform.h>
 #include <backend/Program.h>
 #include <backend/TargetBufferInfo.h>
 
+#include "private/backend/Driver.h"
+#include "private/backend/HandleAllocator.h"
+
+#include <utils/FixedCapacityVector.h>
 #include <utils/compiler.h>
-#include <utils/Allocator.h>
+#include <utils/debug.h>
 
 #include <math/vec4.h>
 
 #include <tsl/robin_map.h>
 
-#include <atomic>
+#include <array>
+#include <condition_variable>
+#include <functional>
 #include <memory>
-#include <set>
+#include <mutex>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifndef FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB
@@ -54,20 +66,22 @@ namespace filament::backend {
 class OpenGLPlatform;
 class PixelBufferDescriptor;
 struct TargetBufferInfo;
-
 class OpenGLProgram;
 class TimerQueryFactoryInterface;
+struct PushConstantBundle;
 
 class OpenGLDriver final : public DriverBase {
-    inline explicit OpenGLDriver(OpenGLPlatform* platform, const Platform::DriverConfig& driverConfig) noexcept;
+    inline explicit OpenGLDriver(OpenGLPlatform* platform,
+            const Platform::DriverConfig& driverConfig) noexcept;
     ~OpenGLDriver() noexcept final;
     Dispatcher getDispatcher() const noexcept final;
 
 public:
-    static Driver* create(OpenGLPlatform* platform, void* sharedGLContext, const Platform::DriverConfig& driverConfig) noexcept;
+    static Driver* create(OpenGLPlatform* platform, void* sharedGLContext,
+            const Platform::DriverConfig& driverConfig) noexcept;
 
     class DebugMarker {
-        OpenGLDriver& driver;
+        UTILS_UNUSED OpenGLDriver& driver;
     public:
         DebugMarker(OpenGLDriver& driver, const char* string) noexcept;
         ~DebugMarker() noexcept;
@@ -78,25 +92,6 @@ public:
     struct GLSwapChain : public HwSwapChain {
         using HwSwapChain::HwSwapChain;
         bool rec709 = false;
-    };
-
-    struct GLBufferObject : public HwBufferObject {
-        using HwBufferObject::HwBufferObject;
-        GLBufferObject(uint32_t size,
-                BufferObjectBinding bindingType, BufferUsage usage) noexcept
-                : HwBufferObject(size), usage(usage), bindingType(bindingType) {
-        }
-
-        struct {
-            GLuint id;
-            union {
-                GLenum binding;
-                void* buffer;
-            };
-        } gl;
-        BufferUsage usage;
-        BufferObjectBinding bindingType;
-        uint16_t age = 0;
     };
 
     struct GLVertexBufferInfo : public HwVertexBufferInfo {
@@ -128,11 +123,10 @@ public:
         } gl;
     };
 
-    struct GLTexture;
     struct GLSamplerGroup : public HwSamplerGroup {
         using HwSamplerGroup::HwSamplerGroup;
         struct Entry {
-            GLTexture const* texture = nullptr;
+            Handle<HwTexture> th;
             GLuint sampler = 0u;
         };
         utils::FixedCapacityVector<Entry> textureUnitEntries;
@@ -142,29 +136,12 @@ public:
     struct GLRenderPrimitive : public HwRenderPrimitive {
         using HwRenderPrimitive::HwRenderPrimitive;
         OpenGLContext::RenderPrimitive gl;
+        Handle<HwVertexBufferInfo> vbih;
     };
 
-    struct GLTexture : public HwTexture {
-        using HwTexture::HwTexture;
-        struct GL {
-            GL() noexcept : imported(false), sidecarSamples(1), reserved(0) {}
-            GLuint id = 0;          // texture or renderbuffer id
-            GLenum target = 0;
-            GLenum internalFormat = 0;
-            GLuint sidecarRenderBufferMS = 0;  // multi-sample sidecar renderbuffer
+    using GLBufferObject = filament::backend::GLBufferObject;
 
-            // texture parameters go here too
-            GLfloat anisotropy = 1.0;
-            int8_t baseLevel = 127;
-            int8_t maxLevel = -1;
-            uint8_t targetIndex = 0;    // optimization: index corresponding to target
-            bool imported           : 1;
-            uint8_t sidecarSamples  : 4;
-            uint8_t reserved        : 3;
-        } gl;
-
-        OpenGLPlatform::ExternalTexture* externalTexture = nullptr;
-    };
+    using GLTexture = filament::backend::GLTexture;
 
     using GLTimerQuery = filament::backend::GLTimerQuery;
 
@@ -255,13 +232,13 @@ private:
     HandleAllocatorGL mHandleAllocator;
 
     template<typename D, typename ... ARGS>
-    Handle<D> initHandle(ARGS&& ... args) noexcept {
+    Handle<D> initHandle(ARGS&& ... args) {
         return mHandleAllocator.allocateAndConstruct<D>(std::forward<ARGS>(args) ...);
     }
 
     template<typename D, typename B, typename ... ARGS>
     typename std::enable_if<std::is_base_of<B, D>::value, D>::type*
-    construct(Handle<B> const& handle, ARGS&& ... args) noexcept {
+    construct(Handle<B> const& handle, ARGS&& ... args) {
         return mHandleAllocator.destroyAndConstruct<D, B>(handle, std::forward<ARGS>(args) ...);
     }
 
@@ -275,15 +252,20 @@ private:
     typename std::enable_if_t<
             std::is_pointer_v<Dp> &&
             std::is_base_of_v<B, typename std::remove_pointer_t<Dp>>, Dp>
-    handle_cast(Handle<B>& handle) noexcept {
+    handle_cast(Handle<B>& handle) {
         return mHandleAllocator.handle_cast<Dp, B>(handle);
+    }
+
+    template<typename B>
+    bool is_valid(Handle<B>& handle) {
+        return mHandleAllocator.is_valid(handle);
     }
 
     template<typename Dp, typename B>
     inline typename std::enable_if_t<
             std::is_pointer_v<Dp> &&
             std::is_base_of_v<B, typename std::remove_pointer_t<Dp>>, Dp>
-    handle_cast(Handle<B> const& handle) noexcept {
+    handle_cast(Handle<B> const& handle) {
         return mHandleAllocator.handle_cast<Dp, B>(handle);
     }
 
@@ -301,7 +283,7 @@ private:
     void updateVertexArrayObject(GLRenderPrimitive* rp, GLVertexBuffer const* vb);
 
     void framebufferTexture(TargetBufferInfo const& binfo,
-            GLRenderTarget const* rt, GLenum attachment) noexcept;
+            GLRenderTarget const* rt, GLenum attachment, uint8_t layerCount) noexcept;
 
     void setRasterState(RasterState rs) noexcept;
 
@@ -335,29 +317,13 @@ private:
     void resolvePass(ResolveAction action, GLRenderTarget const* rt,
             TargetBufferFlags discardFlags) noexcept;
 
-#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
-    GLuint getSamplerSlow(SamplerParams sp) const noexcept;
-
-    inline GLuint getSampler(SamplerParams sp) const noexcept {
-        assert_invariant(!sp.padding0);
-        assert_invariant(!sp.padding1);
-        assert_invariant(!sp.padding2);
-        auto& samplerMap = mSamplerMap;
-        auto pos = samplerMap.find(sp);
-        if (UTILS_UNLIKELY(pos == samplerMap.end())) {
-            return getSamplerSlow(sp);
-        }
-        return pos->second;
-    }
-#endif
-
     const std::array<GLSamplerGroup*, Program::SAMPLER_BINDING_COUNT>& getSamplerBindings() const {
         return mSamplerBindings;
     }
 
     using AttachmentArray = std::array<GLenum, MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT + 2>;
-    static GLsizei getAttachments(AttachmentArray& attachments,
-            GLRenderTarget const* rt, TargetBufferFlags buffers) noexcept;
+    static GLsizei getAttachments(AttachmentArray& attachments, TargetBufferFlags buffers,
+            bool isDefaultFramebuffer) noexcept;
 
     // state required to represent the current render pass
     Handle<HwRenderTarget> mRenderPassTarget;
@@ -366,20 +332,22 @@ private:
     GLboolean mRenderPassDepthWrite{};
     GLboolean mRenderPassStencilWrite{};
 
+    GLRenderPrimitive const* mBoundRenderPrimitive = nullptr;
+    bool mValidProgram = false;
+
+
     void clearWithRasterPipe(TargetBufferFlags clearFlags,
             math::float4 const& linearColor, GLfloat depth, GLint stencil) noexcept;
 
     void setScissor(Viewport const& scissor) noexcept;
 
+    void draw2GLES2(uint32_t indexOffset, uint32_t indexCount, uint32_t instanceCount);
+
     // ES2 only. Uniform buffer emulation binding points
     GLuint mLastAssignedEmulatedUboId = 0;
-    std::array<std::tuple<GLuint, void const*, uint16_t>, Program::UNIFORM_BINDING_COUNT> mUniformBindings = {};
 
     // sampler buffer binding points (nullptr if not used)
     std::array<GLSamplerGroup*, Program::SAMPLER_BINDING_COUNT> mSamplerBindings = {};   // 4 pointers
-
-    mutable tsl::robin_map<SamplerParams, GLuint,
-            SamplerParams::Hasher, SamplerParams::EqualTo> mSamplerMap;
 
     // this must be accessed from the driver thread only
     std::vector<GLTexture*> mTexturesWithStreamsAttached;
@@ -414,6 +382,8 @@ private:
     // for ES2 sRGB support
     GLSwapChain* mCurrentDrawSwapChain = nullptr;
     bool mRec709OutputColorspace = false;
+
+    PushConstantBundle* mCurrentPushConstants = nullptr;
 };
 
 // ------------------------------------------------------------------------------------------------

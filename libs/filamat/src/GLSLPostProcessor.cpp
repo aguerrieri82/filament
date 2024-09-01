@@ -169,6 +169,7 @@ void GLSLPostProcessor::spirvToMsl(const SpirvBlob *spirv, std::string *outMsl,
     }
 
     mslOptions.argument_buffers = true;
+    mslOptions.ios_support_base_vertex_instance = true;
 
     // We're using argument buffers for texture resources, however, we cannot rely on spirv-cross to
     // generate the argument buffer definitions.
@@ -253,6 +254,17 @@ void GLSLPostProcessor::spirvToMsl(const SpirvBlob *spirv, std::string *outMsl,
                 CodeGenerator::METAL_SAMPLER_GROUP_BINDING_START + bindingPoint;
         mslCompiler.add_msl_resource_binding(argBufferBinding);
     }
+
+    // Bind push constants to [buffer(26)]
+    MSLResourceBinding pushConstantBinding;
+    // the baseType doesn't matter, but can't be UNKNOWN
+    pushConstantBinding.basetype = SPIRType::BaseType::Struct;
+    pushConstantBinding.stage = executionModel;
+    pushConstantBinding.desc_set = kPushConstDescSet;
+    pushConstantBinding.binding = kPushConstBinding;
+    pushConstantBinding.count = 1;
+    pushConstantBinding.msl_buffer = 26;
+    mslCompiler.add_msl_resource_binding(pushConstantBinding);
 
     auto updateResourceBindingDefault = [executionModel, &mslCompiler](const auto& resource) {
         auto set = mslCompiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
@@ -538,14 +550,15 @@ bool GLSLPostProcessor::fullOptimization(const TShader& tShader,
 
         if (config.variant.hasStereo() && config.shaderType == ShaderStage::VERTEX) {
             switch (config.materialInfo->stereoscopicType) {
-            case StereoscopicType::INSTANCED:
-                // Nothing to generate
-                break;
             case StereoscopicType::MULTIVIEW:
                 // For stereo variants using multiview feature, this generates the shader code below.
                 //   #extension GL_OVR_multiview2 : require
                 //   layout(num_views = 2) in;
                 glslOptions.ovr_multiview_view_count = config.materialInfo->stereoscopicEyeCount;
+                break;
+            case StereoscopicType::INSTANCED:
+            case StereoscopicType::NONE:
+                // Nothing to generate
                 break;
             }
         }
@@ -603,7 +616,13 @@ std::shared_ptr<spvtools::Optimizer> GLSLPostProcessor::createOptimizer(
     });
 
     if (optimization == MaterialBuilder::Optimization::SIZE) {
-        registerSizePasses(*optimizer, config);
+        // When optimizing for size, we don't run the SPIR-V through any size optimization passes
+        // when targeting MSL. This results in better line dictionary compression. We do, however,
+        // still register the passes necessary (below) to support half precision floating point
+        // math.
+        if (config.targetApi != MaterialBuilder::TargetApi::METAL) {
+            registerSizePasses(*optimizer, config);
+        }
     } else if (optimization == MaterialBuilder::Optimization::PERFORMANCE) {
         registerPerformancePasses(*optimizer, config);
     }
@@ -652,13 +671,15 @@ void GLSLPostProcessor::fixupClipDistance(
 // - triggers a crash on some Adreno drivers (b/291140208, b/289401984, b/289393290)
 // However Metal requires this pass in order to correctly generate half-precision MSL
 //
-// CreateSimplificationPass() creates a lot of problems:
+// Note: CreateSimplificationPass() used to creates a lot of problems:
 // - Adreno GPU show artifacts after running simplification passes (Vulkan)
 // - spirv-cross fails generating working glsl
 //      (https://github.com/KhronosGroup/SPIRV-Cross/issues/2162)
-// - generally it makes the code more complicated, e.g.: replacing for loops with
-//   while-if-break, unclear if it helps for anything.
-// However, the simplification passes below are necessary when targeting Metal, otherwise the
+//
+// However this problem was addressed in spirv-cross here:
+//      https://github.com/KhronosGroup/SPIRV-Cross/pull/2163
+//
+// The simplification passes below are necessary when targeting Metal, otherwise the
 // result is mismatched half / float assignments in MSL.
 
 
@@ -691,11 +712,11 @@ void GLSLPostProcessor::registerPerformancePasses(Optimizer& optimizer, Config c
     RegisterPass(CreateAggressiveDCEPass());
     RegisterPass(CreateRedundancyEliminationPass());
     RegisterPass(CreateCombineAccessChainsPass());
-    RegisterPass(CreateSimplificationPass(), MaterialBuilder::TargetApi::METAL);
+    RegisterPass(CreateSimplificationPass());
     RegisterPass(CreateVectorDCEPass());
     RegisterPass(CreateDeadInsertElimPass());
     RegisterPass(CreateDeadBranchElimPass());
-    RegisterPass(CreateSimplificationPass(), MaterialBuilder::TargetApi::METAL);
+    RegisterPass(CreateSimplificationPass());
     RegisterPass(CreateIfConversionPass());
     RegisterPass(CreateCopyPropagateArraysPass());
     RegisterPass(CreateReduceLoadSizePass());
@@ -704,7 +725,7 @@ void GLSLPostProcessor::registerPerformancePasses(Optimizer& optimizer, Config c
     RegisterPass(CreateRedundancyEliminationPass());
     RegisterPass(CreateDeadBranchElimPass());
     RegisterPass(CreateBlockMergePass());
-    RegisterPass(CreateSimplificationPass(), MaterialBuilder::TargetApi::METAL);
+    RegisterPass(CreateSimplificationPass());
 }
 
 void GLSLPostProcessor::registerSizePasses(Optimizer& optimizer, Config const& config) {
@@ -718,7 +739,6 @@ void GLSLPostProcessor::registerSizePasses(Optimizer& optimizer, Config const& c
 
     RegisterPass(CreateWrapOpKillPass());
     RegisterPass(CreateDeadBranchElimPass());
-    RegisterPass(CreateMergeReturnPass(), MaterialBuilder::TargetApi::METAL);
     RegisterPass(CreateInlineExhaustivePass());
     RegisterPass(CreateEliminateDeadFunctionsPass());
     RegisterPass(CreatePrivateToLocalPass());
@@ -727,11 +747,9 @@ void GLSLPostProcessor::registerSizePasses(Optimizer& optimizer, Config const& c
     RegisterPass(CreateCCPPass());
     RegisterPass(CreateLoopUnrollPass(true));
     RegisterPass(CreateDeadBranchElimPass());
-    RegisterPass(CreateSimplificationPass(), MaterialBuilder::TargetApi::METAL);
     RegisterPass(CreateScalarReplacementPass(0));
     RegisterPass(CreateLocalSingleStoreElimPass());
     RegisterPass(CreateIfConversionPass());
-    RegisterPass(CreateSimplificationPass(), MaterialBuilder::TargetApi::METAL);
     RegisterPass(CreateAggressiveDCEPass());
     RegisterPass(CreateDeadBranchElimPass());
     RegisterPass(CreateBlockMergePass());
@@ -747,7 +765,6 @@ void GLSLPostProcessor::registerSizePasses(Optimizer& optimizer, Config const& c
     RegisterPass(CreateBlockMergePass());
     RegisterPass(CreateLocalMultiStoreElimPass());
     RegisterPass(CreateRedundancyEliminationPass());
-    RegisterPass(CreateSimplificationPass(), MaterialBuilder::TargetApi::METAL);
     RegisterPass(CreateAggressiveDCEPass());
     RegisterPass(CreateCFGCleanupPass());
 }

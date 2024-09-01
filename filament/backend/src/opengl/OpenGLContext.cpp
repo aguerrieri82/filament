@@ -16,10 +16,24 @@
 
 #include "OpenGLContext.h"
 
+#include "GLUtils.h"
+#include "OpenGLTimerQuery.h"
+
 #include <backend/platforms/OpenGLPlatform.h>
+#include <backend/DriverEnums.h>
+
+#include <utils/compiler.h>
+#include <utils/debug.h>
+#include <utils/Log.h>
+#include <utils/ostream.h>
 
 #include <functional>
+#include <string_view>
 #include <utility>
+
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
 
 // change to true to display all GL extensions in the console on start-up
 #define DEBUG_PRINT_EXTENSIONS false
@@ -49,7 +63,11 @@ bool OpenGLContext::queryOpenGLVersion(GLint* major, GLint* minor) noexcept {
 #endif
 }
 
-OpenGLContext::OpenGLContext(OpenGLPlatform& platform) noexcept {
+OpenGLContext::OpenGLContext(OpenGLPlatform& platform,
+        Platform::DriverConfig const& driverConfig) noexcept
+        : mPlatform(platform),
+          mSamplerMap(32),
+          mDriverConfig(driverConfig) {
 
     state.vao.p = &mDefaultVAO;
 
@@ -68,6 +86,13 @@ OpenGLContext::OpenGLContext(OpenGLPlatform& platform) noexcept {
      */
 
     queryOpenGLVersion(&state.major, &state.minor);
+
+    #if defined(BACKEND_OPENGL_VERSION_GLES)
+    if (UTILS_UNLIKELY(driverConfig.forceGLES2Context)) {
+        state.major = 2;
+        state.minor = 0;
+    }
+    #endif
 
     OpenGLContext::initExtensions(&ext, state.major, state.minor);
 
@@ -237,7 +262,21 @@ OpenGLContext::OpenGLContext(OpenGLPlatform& platform) noexcept {
 }
 
 OpenGLContext::~OpenGLContext() noexcept {
+    // note: this is called from the main thread. Can't do any GL calls.
     delete mTimerQueryFactory;
+}
+
+void OpenGLContext::terminate() noexcept {
+    // note: this is called from the backend thread
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+    if (!isES2()) {
+        for (auto& item: mSamplerMap) {
+            unbindSampler(item.second);
+            glDeleteSamplers(1, &item.second);
+        }
+        mSamplerMap.clear();
+    }
+#endif
 }
 
 void OpenGLContext::destroyWithContext(
@@ -269,6 +308,9 @@ void OpenGLContext::synchronizeStateAndCache(size_t index) noexcept {
             fn(*this);
         }
     }
+
+    // the default FBO could be invalid
+    mDefaultFbo[index].reset();
 
     contextIndex = index;
     resetState();
@@ -325,7 +367,8 @@ void OpenGLContext::setDefaultState() noexcept {
     }
 #endif
 
-    if (ext.EXT_clip_cull_distance) {
+    if (ext.EXT_clip_cull_distance
+            && mDriverConfig.stereoscopicType == StereoscopicType::INSTANCED) {
         glEnable(GL_CLIP_DISTANCE0);
         glEnable(GL_CLIP_DISTANCE1);
     }
@@ -498,8 +541,6 @@ void OpenGLContext::initBugs(Bugs* bugs, Extensions const& exts,
             bugs->delay_fbo_destruction = true;
             // PowerVR seems to have no problem with this (which is good for us)
             bugs->allow_read_only_ancillary_feedback_loop = true;
-            // PowerVR has a shader compiler thread pinned on the last core
-            bugs->disable_thread_affinity = true;
         } else if (strstr(renderer, "Apple")) {
             // Apple GPU
         } else if (strstr(renderer, "Tegra") ||
@@ -635,6 +676,7 @@ void OpenGLContext::initExtensionsGLES(Extensions* ext, GLint major, GLint minor
 #ifndef __EMSCRIPTEN__
     ext->EXT_debug_marker = exts.has("GL_EXT_debug_marker"sv);
 #endif
+    ext->EXT_depth_clamp = exts.has("GL_EXT_depth_clamp"sv);
     ext->EXT_discard_framebuffer = exts.has("GL_EXT_discard_framebuffer"sv);
 #ifndef __EMSCRIPTEN__
     ext->EXT_disjoint_timer_query = exts.has("GL_EXT_disjoint_timer_query"sv);
@@ -705,6 +747,7 @@ void OpenGLContext::initExtensionsGL(Extensions* ext, GLint major, GLint minor) 
     ext->EXT_color_buffer_half_float = true;  // Assumes core profile.
     ext->EXT_clip_cull_distance = true;
     ext->EXT_debug_marker = exts.has("GL_EXT_debug_marker"sv);
+    ext->EXT_depth_clamp = true;
     ext->EXT_discard_framebuffer = false;
     ext->EXT_disjoint_timer_query = true;
     ext->EXT_multisampled_render_to_texture = false;
@@ -750,6 +793,51 @@ void OpenGLContext::initExtensionsGL(Extensions* ext, GLint major, GLint minor) 
 }
 
 #endif // BACKEND_OPENGL_VERSION_GL
+
+
+GLuint OpenGLContext::bindFramebuffer(GLenum target, GLuint buffer) noexcept {
+    if (UTILS_UNLIKELY(buffer == 0)) {
+        // we're binding the default frame buffer, resolve its actual name
+        auto& defaultFboForThisContext = mDefaultFbo[contextIndex];
+        if (UTILS_UNLIKELY(!defaultFboForThisContext.has_value())) {
+            defaultFboForThisContext = GLuint(mPlatform.getDefaultFramebufferObject());
+        }
+        buffer = defaultFboForThisContext.value();
+    }
+    bindFramebufferResolved(target, buffer);
+    return buffer;
+}
+
+void OpenGLContext::unbindFramebuffer(GLenum target) noexcept {
+    bindFramebufferResolved(target, 0);
+}
+
+void OpenGLContext::bindFramebufferResolved(GLenum target, GLuint buffer) noexcept {
+    switch (target) {
+        case GL_FRAMEBUFFER:
+            if (state.draw_fbo != buffer || state.read_fbo != buffer) {
+                state.draw_fbo = state.read_fbo = buffer;
+                glBindFramebuffer(target, buffer);
+            }
+            break;
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+        case GL_DRAW_FRAMEBUFFER:
+            if (state.draw_fbo != buffer) {
+                state.draw_fbo = buffer;
+                glBindFramebuffer(target, buffer);
+            }
+            break;
+        case GL_READ_FRAMEBUFFER:
+            if (state.read_fbo != buffer) {
+                state.read_fbo = buffer;
+                glBindFramebuffer(target, buffer);
+            }
+            break;
+#endif
+        default:
+            break;
+    }
+}
 
 void OpenGLContext::bindBuffer(GLenum target, GLuint buffer) noexcept {
     if (target == GL_ELEMENT_ARRAY_BUFFER) {
@@ -805,17 +893,30 @@ default_case:
     }
 }
 
-void OpenGLContext::unbindTexture(GLenum target, GLuint texture_id) noexcept {
+void OpenGLContext::unbindTexture(
+        UTILS_UNUSED_IN_RELEASE GLenum target, GLuint texture_id) noexcept {
     // unbind this texture from all the units it might be bound to
     // no need unbind the texture from FBOs because we're not tracking that state (and there is
     // no need to).
-    const size_t index = getIndexForTextureTarget(target);
-    UTILS_NOUNROLL
-    for (GLuint unit = 0; unit < MAX_TEXTURE_UNIT_COUNT; unit++) {
-        if (state.textures.units[unit].targets[index].texture_id == texture_id) {
-            bindTexture(unit, target, (GLuint)0, index);
+    // Never attempt to unbind texture 0. This could happen with external textures w/ streaming if
+    // never populated.
+    if (texture_id) {
+        UTILS_NOUNROLL
+        for (GLuint unit = 0; unit < MAX_TEXTURE_UNIT_COUNT; unit++) {
+            if (state.textures.units[unit].id == texture_id) {
+                // if this texture is bound, it should be at the same target
+                assert_invariant(state.textures.units[unit].target == target);
+                unbindTextureUnit(unit);
+            }
         }
     }
+}
+
+void OpenGLContext::unbindTextureUnit(GLuint unit) noexcept {
+    update_state(state.textures.units[unit].id, 0u, [&]() {
+        activeTexture(unit);
+        glBindTexture(state.textures.units[unit].target, 0u);
+    });
 }
 
 void OpenGLContext::unbindSampler(GLuint sampler) noexcept {
@@ -870,6 +971,37 @@ void OpenGLContext::deleteVertexArray(GLuint vao) noexcept {
         }
     }
 }
+
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+GLuint OpenGLContext::getSamplerSlow(SamplerParams params) const noexcept {
+    assert_invariant(mSamplerMap.find(params) == mSamplerMap.end());
+
+    using namespace GLUtils;
+
+    GLuint s;
+    glGenSamplers(1, &s);
+    glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER,   (GLint)getTextureFilter(params.filterMin));
+    glSamplerParameteri(s, GL_TEXTURE_MAG_FILTER,   (GLint)getTextureFilter(params.filterMag));
+    glSamplerParameteri(s, GL_TEXTURE_WRAP_S,       (GLint)getWrapMode(params.wrapS));
+    glSamplerParameteri(s, GL_TEXTURE_WRAP_T,       (GLint)getWrapMode(params.wrapT));
+    glSamplerParameteri(s, GL_TEXTURE_WRAP_R,       (GLint)getWrapMode(params.wrapR));
+    glSamplerParameteri(s, GL_TEXTURE_COMPARE_MODE, (GLint)getTextureCompareMode(params.compareMode));
+    glSamplerParameteri(s, GL_TEXTURE_COMPARE_FUNC, (GLint)getTextureCompareFunc(params.compareFunc));
+
+#if defined(GL_EXT_texture_filter_anisotropic)
+    if (ext.EXT_texture_filter_anisotropic &&
+        !bugs.texture_filter_anisotropic_broken_on_sampler) {
+        GLfloat const anisotropy = float(1u << params.anisotropyLog2);
+        glSamplerParameterf(s, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+                std::min(gets.max_anisotropy, anisotropy));
+    }
+#endif
+    CHECK_GL_ERROR(utils::slog.e)
+    mSamplerMap[params] = s;
+    return s;
+}
+#endif
+
 
 void OpenGLContext::resetState() noexcept {
     // Force GL state to match the Filament state

@@ -22,14 +22,17 @@
 #include <utils/BitmaskEnum.h>
 #include <utils/unwindows.h> // Because we define ERROR in the FenceStatus enum.
 
+#include <backend/Platform.h>
 #include <backend/PresentCallable.h>
 
+#include <utils/Invocable.h>
 #include <utils/ostream.h>
 
 #include <math/vec4.h>
 
 #include <array>        // FIXME: STL headers are not allowed in public headers
 #include <type_traits>  // FIXME: STL headers are not allowed in public headers
+#include <variant>      // FIXME: STL headers are not allowed in public headers
 
 #include <stddef.h>
 #include <stdint.h>
@@ -90,11 +93,14 @@ static constexpr uint64_t SWAP_CHAIN_HAS_STENCIL_BUFFER         = SWAP_CHAIN_CON
  */
 static constexpr uint64_t SWAP_CHAIN_CONFIG_PROTECTED_CONTENT   = 0x40;
 
-
 static constexpr size_t MAX_VERTEX_ATTRIBUTE_COUNT  = 16;   // This is guaranteed by OpenGL ES.
 static constexpr size_t MAX_SAMPLER_COUNT           = 62;   // Maximum needed at feature level 3.
 static constexpr size_t MAX_VERTEX_BUFFER_COUNT     = 16;   // Max number of bound buffer objects.
 static constexpr size_t MAX_SSBO_COUNT              = 4;    // This is guaranteed by OpenGL ES.
+
+static constexpr size_t MAX_PUSH_CONSTANT_COUNT     = 32;   // Vulkan 1.1 spec allows for 128-byte
+                                                            // of push constant (we assume 4-byte
+                                                            // types).
 
 // Per feature level caps
 // Use (int)FeatureLevel to index this array
@@ -112,7 +118,7 @@ static_assert(MAX_VERTEX_BUFFER_COUNT <= MAX_VERTEX_ATTRIBUTE_COUNT,
         "The number of buffer objects that can be attached to a VertexBuffer must be "
         "less than or equal to the maximum number of vertex attributes.");
 
-static constexpr size_t CONFIG_UNIFORM_BINDING_COUNT = 10;  // This is guaranteed by OpenGL ES.
+static constexpr size_t CONFIG_UNIFORM_BINDING_COUNT = 9;   // This is guaranteed by OpenGL ES.
 static constexpr size_t CONFIG_SAMPLER_BINDING_COUNT = 4;   // This is guaranteed by OpenGL ES.
 
 /**
@@ -158,14 +164,16 @@ static constexpr const char* backendToString(Backend backend) {
 }
 
 /**
- * Defines the shader language. Similar to the above backend enum, but the OpenGL backend can select
- * between two shader languages: ESSL 1.0 and ESSL 3.0.
+ * Defines the shader language. Similar to the above backend enum, with some differences:
+ * - The OpenGL backend can select between two shader languages: ESSL 1.0 and ESSL 3.0.
+ * - The Metal backend can prefer precompiled Metal libraries, while falling back to MSL.
  */
 enum class ShaderLanguage {
     ESSL1 = 0,
     ESSL3 = 1,
     SPIRV = 2,
     MSL = 3,
+    METAL_LIBRARY = 4,
 };
 
 static constexpr const char* shaderLanguageToString(ShaderLanguage shaderLanguage) {
@@ -178,6 +186,8 @@ static constexpr const char* shaderLanguageToString(ShaderLanguage shaderLanguag
             return "SPIR-V";
         case ShaderLanguage::MSL:
             return "MSL";
+        case ShaderLanguage::METAL_LIBRARY:
+            return "Metal precompiled library";
     }
 }
 
@@ -327,7 +337,7 @@ enum class UniformType : uint8_t {
 /**
  * Supported constant parameter types
  */
- enum class ConstantType : uint8_t {
+enum class ConstantType : uint8_t {
   INT,
   FLOAT,
   BOOL
@@ -682,7 +692,7 @@ enum class TextureUsage : uint16_t {
     SUBPASS_INPUT       = 0x0020,            //!< Texture can be used as a subpass input
     BLIT_SRC            = 0x0040,            //!< Texture can be used the source of a blit()
     BLIT_DST            = 0x0080,            //!< Texture can be used the destination of a blit()
-    PROTECTED           = 0x0100,            //!< Texture can be used the destination of a blit()
+    PROTECTED           = 0x0100,            //!< Texture can be used for protected content
     DEFAULT             = UPLOADABLE | SAMPLEABLE   //!< Default texture usage
 };
 
@@ -1048,7 +1058,7 @@ struct RasterState {
             bool inverseFrontFaces                      : 1;        // 31
 
             //! padding, must be 0
-            uint8_t padding                             : 1;        // 32
+            bool depthClamp                             : 1;        // 32
         };
         uint32_t u = 0;
     };
@@ -1186,11 +1196,27 @@ struct StencilState {
 
     //! Stencil operations for front-facing polygons
     StencilOperations front = {
-            .stencilFunc = StencilFunction::A, .ref = 0, .readMask = 0xff, .writeMask = 0xff };
+            .stencilFunc = StencilFunction::A,
+            .stencilOpStencilFail = StencilOperation::KEEP,
+            .padding0 = 0,
+            .stencilOpDepthFail = StencilOperation::KEEP,
+            .stencilOpDepthStencilPass = StencilOperation::KEEP,
+            .padding1 = 0,
+            .ref = 0,
+            .readMask = 0xff,
+            .writeMask = 0xff };
 
     //! Stencil operations for back-facing polygons
     StencilOperations back  = {
-            .stencilFunc = StencilFunction::A, .ref = 0, .readMask = 0xff, .writeMask = 0xff };
+            .stencilFunc = StencilFunction::A,
+            .stencilOpStencilFail = StencilOperation::KEEP,
+            .padding0 = 0,
+            .stencilOpDepthFail = StencilOperation::KEEP,
+            .stencilOpDepthStencilPass = StencilOperation::KEEP,
+            .padding1 = 0,
+            .ref = 0,
+            .readMask = 0xff,
+            .writeMask = 0xff };
 
     //! Whether stencil-buffer writes are enabled
     bool stencilWrite = false;
@@ -1198,13 +1224,15 @@ struct StencilState {
     uint8_t padding = 0;
 };
 
+using PushConstantVariant = std::variant<int32_t, float, bool>;
+
 static_assert(sizeof(StencilState::StencilOperations) == 5u,
         "StencilOperations size not what was intended");
 
 static_assert(sizeof(StencilState) == 12u,
         "StencilState size not what was intended");
 
-using FrameScheduledCallback = void(*)(PresentCallable callable, void* user);
+using FrameScheduledCallback = utils::Invocable<void(backend::PresentCallable)>;
 
 enum class Workaround : uint16_t {
     // The EASU pass must split because shader compiler flattens early-exit branch
@@ -1216,23 +1244,14 @@ enum class Workaround : uint16_t {
     ADRENO_UNIFORM_ARRAY_CRASH,
     // Workaround a Metal pipeline compilation error with the message:
     // "Could not statically determine the target of a texture". See light_indirect.fs
-    A8X_STATIC_TEXTURE_TARGET_ERROR,
+    METAL_STATIC_TEXTURE_TARGET_ERROR,
     // Adreno drivers sometimes aren't able to blit into a layer of a texture array.
     DISABLE_BLIT_INTO_TEXTURE_ARRAY,
     // Multiple workarounds needed for PowerVR GPUs
     POWER_VR_SHADER_WORKAROUNDS,
-    // The driver has some threads pinned, and we can't easily know on which core, it can hurt
-    // performance more if we end-up pinned on the same one.
-    DISABLE_THREAD_AFFINITY
 };
 
-//! The type of technique for stereoscopic rendering
-enum class StereoscopicType : uint8_t {
-    // Stereoscopic rendering is performed using instanced rendering technique.
-    INSTANCED,
-    // Stereoscopic rendering is performed using the multiview feature from the graphics backend.
-    MULTIVIEW,
-};
+using StereoscopicType = backend::Platform::StereoscopicType;
 
 } // namespace filament::backend
 

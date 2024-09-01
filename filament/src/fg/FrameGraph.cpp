@@ -24,6 +24,7 @@
 #include "FrameGraphPass.h"
 #include "FrameGraphRenderPass.h"
 #include "FrameGraphTexture.h"
+#include "ResourceAllocator.h"
 
 #include "details/Engine.h"
 
@@ -302,9 +303,9 @@ FrameGraphHandle FrameGraph::readInternal(FrameGraphHandle handle, PassNode* pas
 
     // Check preconditions
     bool const passAlreadyAWriter = node->hasWriteFrom(passNode);
-    ASSERT_PRECONDITION(!passAlreadyAWriter,
-            "Pass \"%s\" already writes to \"%s\"",
-            passNode->getName(), node->getName());
+    FILAMENT_CHECK_PRECONDITION(!passAlreadyAWriter)
+            << "Pass \"" << passNode->getName() << "\" already writes to \"" << node->getName()
+            << "\"";
 
     if (!node->hasWriterPass() && !resource->isImported()) {
         // TODO: we're attempting to read from a resource that was never written and is not
@@ -464,9 +465,9 @@ bool FrameGraph::isValid(FrameGraphHandle handle) const {
 }
 
 void FrameGraph::assertValid(FrameGraphHandle handle) const {
-    ASSERT_PRECONDITION(isValid(handle),
-            "Resource handle is invalid or uninitialized {id=%u, version=%u}",
-            (int)handle.index, (int)handle.version);
+    FILAMENT_CHECK_PRECONDITION(isValid(handle))
+            << "Resource handle is invalid or uninitialized {id=" << (int)handle.index
+            << ", version=" << (int)handle.version << "}";
 }
 
 bool FrameGraph::isCulled(FrameGraphPassBase const& pass) const noexcept {

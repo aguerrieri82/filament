@@ -615,14 +615,51 @@ static bool processVariables(MaterialBuilder& builder, const JsonishValue& value
     }
 
     for (size_t i = 0; i < elements.size(); i++) {
-        auto elementValue = elements[i];
+        ParameterPrecision precision = ParameterPrecision::DEFAULT;
         MaterialBuilder::Variable v = intToVariable(i);
-        if (elementValue->getType() != JsonishValue::Type::STRING) {
+        std::string nameString;
+
+        auto elementValue = elements[i];
+        if (elementValue->getType() == JsonishValue::Type::OBJECT) {
+
+            JsonishObject const& jsonObject = *elementValue->toJsonObject();
+
+            const JsonishValue* nameValue = jsonObject.getValue("name");
+            if (!nameValue) {
+                std::cerr << "variables: entry without 'name' key." << std::endl;
+                return false;
+            }
+            if (nameValue->getType() != JsonishValue::STRING) {
+                std::cerr << "variables: name value must be STRING." << std::endl;
+                return false;
+            }
+
+            const JsonishValue* precisionValue = jsonObject.getValue("precision");
+            if (precisionValue) {
+                if (precisionValue->getType() != JsonishValue::STRING) {
+                    std::cerr << "variables: precision must be a STRING." << std::endl;
+                    return false;
+                }
+                auto precisionString = precisionValue->toJsonString();
+                if (!Enums::isValid<ParameterPrecision>(precisionString->getString())){
+                    return logEnumIssue("variables", *precisionString, Enums::map<ParameterPrecision>());
+                }
+            }
+
+            nameString = nameValue->toJsonString()->getString();
+            if (precisionValue) {
+                precision = Enums::toEnum<ParameterPrecision>(
+                        precisionValue->toJsonString()->getString());
+            }
+            builder.variable(v, nameString.c_str(), precision);
+        } else if (elementValue->getType() == JsonishValue::Type::STRING) {
+            nameString = elementValue->toJsonString()->getString();
+            builder.variable(v, nameString.c_str());
+        } else {
             std::cerr << "variables: array index " << i << " is not a STRING. found:" <<
                     JsonishValue::typeToString(elementValue->getType()) << std::endl;
             return false;
         }
-        builder.variable(v, elementValue->toJsonString()->getString().c_str());
     }
 
     return true;
@@ -671,6 +708,7 @@ static bool processBlending(MaterialBuilder& builder, const JsonishValue& value)
         { "fade", MaterialBuilder::BlendingMode::FADE },
         { "multiply", MaterialBuilder::BlendingMode::MULTIPLY },
         { "screen", MaterialBuilder::BlendingMode::SCREEN },
+        { "custom", MaterialBuilder::BlendingMode::CUSTOM },
     };
     auto jsonString = value.toJsonString();
     if (!isStringValidEnum(strToEnum, jsonString->getString())) {
@@ -678,6 +716,52 @@ static bool processBlending(MaterialBuilder& builder, const JsonishValue& value)
     }
 
     builder.blending(stringToEnum(strToEnum, jsonString->getString()));
+    return true;
+}
+
+static bool processBlendFunction(MaterialBuilder& builder, const JsonishValue& value) {
+    static const std::unordered_map<std::string, MaterialBuilder::BlendFunction> strToEnum{
+            { "zero",             MaterialBuilder::BlendFunction::ZERO },
+            { "one",              MaterialBuilder::BlendFunction::ONE },
+            { "srcColor",         MaterialBuilder::BlendFunction::SRC_COLOR },
+            { "oneMinusSrcColor", MaterialBuilder::BlendFunction::ONE_MINUS_SRC_COLOR },
+            { "dstColor",         MaterialBuilder::BlendFunction::DST_COLOR },
+            { "oneMinusDstColor", MaterialBuilder::BlendFunction::ONE_MINUS_DST_COLOR },
+            { "srcAlpha",         MaterialBuilder::BlendFunction::SRC_ALPHA },
+            { "oneMinusSrcAlpha", MaterialBuilder::BlendFunction::ONE_MINUS_SRC_ALPHA },
+            { "dstAlpha",         MaterialBuilder::BlendFunction::DST_ALPHA },
+            { "oneMinusDstAlpha", MaterialBuilder::BlendFunction::ONE_MINUS_DST_ALPHA },
+            { "srcAlphaSaturate", MaterialBuilder::BlendFunction::SRC_ALPHA_SATURATE },
+    };
+
+    if (value.getType() != JsonishValue::Type::OBJECT) {
+        std::cerr << "blendFunction must be an OBJECT." << std::endl;
+    }
+
+    JsonishObject const* const jsonObject = value.toJsonObject();
+
+    MaterialBuilder::BlendFunction srcRGB, srcA, dstRGB, dstA;
+    std::pair<const char*, MaterialBuilder::BlendFunction*> functions[] = {
+            { "srcRGB", &srcRGB },
+            { "srcA",   &srcA },
+            { "dstRGB", &dstRGB },
+            { "dstA",   &dstA },
+    };
+
+    for (auto&& entry : functions) {
+        const char* key = entry.first;
+        const JsonishValue* v = jsonObject->getValue(key);
+        if (!v) {
+            std::cerr << "blendFunction: entry without '" << key << "' key." << std::endl;
+            return false;
+        }
+        if (v->getType() != JsonishValue::STRING) {
+            std::cerr << "blendFunction: '" << key << "' value must be STRING." << std::endl;
+            return false;
+        }
+        *entry.second = stringToEnum(strToEnum, v->toJsonString()->getString());
+    }
+    builder.customBlendFunctions(srcRGB, srcA, dstRGB, dstA);
     return true;
 }
 
@@ -1194,6 +1278,7 @@ ParametersProcessor::ParametersProcessor() {
     mParameters["variables"]                     = { &processVariables, Type::ARRAY };
     mParameters["requires"]                      = { &processRequires, Type::ARRAY };
     mParameters["blending"]                      = { &processBlending, Type::STRING };
+    mParameters["blendFunction"]                 = { &processBlendFunction, Type::OBJECT };
     mParameters["postLightingBlending"]          = { &processPostLightingBlending, Type::STRING };
     mParameters["vertexDomain"]                  = { &processVertexDomain, Type::STRING };
     mParameters["culling"]                       = { &processCulling, Type::STRING };

@@ -25,6 +25,8 @@
 #include <math/mat4.h>
 #include <math/norm.h>
 
+#include <utils/CString.h>
+
 namespace filament {
 
 using namespace backend;
@@ -124,6 +126,11 @@ FMorphTargetBuffer::FMorphTargetBuffer(FEngine& engine, const Builder& builder)
             mCount,
             TextureUsage::DEFAULT);
 
+    if (auto name = builder.getName(); !name.empty()) {
+        driver.setDebugTag(mPbHandle.getId(), name);
+        driver.setDebugTag(mTbHandle.getId(), std::move(name));
+    }
+
     // create and update sampler group
     mSbHandle = driver.createSamplerGroup(PerRenderPrimitiveMorphingSib::SAMPLER_COUNT,
             utils::FixedSizeString<32>("Morph target samplers"));
@@ -148,15 +155,14 @@ void FMorphTargetBuffer::terminate(FEngine& engine) {
 
 void FMorphTargetBuffer::setPositionsAt(FEngine& engine, size_t targetIndex,
         math::float3 const* positions, size_t count, size_t offset) {
+    FILAMENT_CHECK_PRECONDITION(offset + count <= mVertexCount)
+            << "MorphTargetBuffer (size=" << (unsigned)mVertexCount
+            << ") overflow (count=" << (unsigned)count << ", offset=" << (unsigned)offset << ")";
 
-    ASSERT_PRECONDITION(offset + count <= mVertexCount,
-            "MorphTargetBuffer (size=%lu) overflow (count=%u, offset=%u)",
-            (unsigned)mVertexCount, (unsigned)count, (unsigned)offset);
+    auto size = getSize<VertexAttribute::POSITION>(count);
 
-    auto size = getSize<VertexAttribute::POSITION>(mVertexCount);
-
-    ASSERT_PRECONDITION(targetIndex < mCount,
-            "%d target index must be < %d", targetIndex, mCount);
+    FILAMENT_CHECK_PRECONDITION(targetIndex < mCount)
+            << targetIndex << " target index must be < " << mCount;
 
     // We could use a pool instead of malloc() directly.
     auto* out = (float4*) malloc(size);
@@ -172,15 +178,14 @@ void FMorphTargetBuffer::setPositionsAt(FEngine& engine, size_t targetIndex,
 
 void FMorphTargetBuffer::setPositionsAt(FEngine& engine, size_t targetIndex,
         math::float4 const* positions, size_t count, size_t offset) {
+    FILAMENT_CHECK_PRECONDITION(offset + count <= mVertexCount)
+            << "MorphTargetBuffer (size=" << (unsigned)mVertexCount
+            << ") overflow (count=" << (unsigned)count << ", offset=" << (unsigned)offset << ")";
 
-    ASSERT_PRECONDITION(offset + count <= mVertexCount,
-            "MorphTargetBuffer (size=%lu) overflow (count=%u, offset=%u)",
-            (unsigned)mVertexCount, (unsigned)count, (unsigned)offset);
+    auto size = getSize<VertexAttribute::POSITION>(count);
 
-    auto size = getSize<VertexAttribute::POSITION>(mVertexCount);
-
-    ASSERT_PRECONDITION(targetIndex < mCount,
-            "%d target index must be < %d", targetIndex, mCount);
+    FILAMENT_CHECK_PRECONDITION(targetIndex < mCount)
+            << targetIndex << " target index must be < " << mCount;
 
     // We could use a pool instead of malloc() directly.
     auto* out = (float4*) malloc(size);
@@ -195,15 +200,14 @@ void FMorphTargetBuffer::setPositionsAt(FEngine& engine, size_t targetIndex,
 
 void FMorphTargetBuffer::setTangentsAt(FEngine& engine, size_t targetIndex,
         math::short4 const* tangents, size_t count, size_t offset) {
+    FILAMENT_CHECK_PRECONDITION(offset + count <= mVertexCount)
+            << "MorphTargetBuffer (size=" << (unsigned)mVertexCount
+            << ") overflow (count=" << (unsigned)count << ", offset=" << (unsigned)offset << ")";
 
-    ASSERT_PRECONDITION(offset + count <= mVertexCount,
-            "MorphTargetBuffer (size=%lu) overflow (count=%u, offset=%u)",
-            (unsigned)mVertexCount, (unsigned)count, (unsigned)offset);
+    const auto size = getSize<VertexAttribute::TANGENTS>(count);
 
-    const auto size = getSize<VertexAttribute::TANGENTS>(mVertexCount);
-
-    ASSERT_PRECONDITION(targetIndex < mCount,
-            "%d target index must be < %d", targetIndex, mCount);
+    FILAMENT_CHECK_PRECONDITION(targetIndex < mCount)
+            << targetIndex << " target index must be < " << mCount;
 
     // We could use a pool instead of malloc() directly.
     auto* out = (short4*) malloc(size);
@@ -226,8 +230,8 @@ void FMorphTargetBuffer::updateDataAt(backend::DriverApi& driver,
     size_t const xoffset        = offset % MAX_MORPH_TARGET_BUFFER_WIDTH;
     size_t const textureWidth   = getWidth(mVertexCount);
     size_t const alignment      = ((textureWidth - xoffset) % textureWidth);
-    size_t const lineCount      = (count - alignment) / textureWidth;
-    size_t const lastLineCount  = (count - alignment) % textureWidth;
+    size_t const lineCount      = (count > alignment) ? (count - alignment) / textureWidth : 0;
+    size_t const lastLineCount  = (count > alignment) ? (count - alignment) % textureWidth : 0;
 
     // 'out' buffer is going to be used up to 3 times, so for simplicity we use a shared_buffer
     // to manage its lifetime. One side effect of this is that the callbacks below will allocate
