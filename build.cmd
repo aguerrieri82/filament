@@ -1,14 +1,14 @@
 pushd 
 
 SET FILAMENT_PATH=%CD%
-SET OUT_PATH=D:\Development\Personal\Git\OpenXrSDK\third-party
+SET OUT_PATH=D:\Development\Personal\Git\XrSDK\third-party
 
 cd %FILAMENT_PATH%\out\cmake-release-win
 cmake ^
     -G Ninja ^
     -DCMAKE_INSTALL_PREFIX=..\release-win\filament ^
     -DFILAMENT_ENABLE_JAVA=NO ^
-	-DFILAMENT_SKIP_SAMPLES=ON ^
+	-DFILAMENT_SKIP_SAMPLES=OFF ^
     -DCMAKE_BUILD_TYPE=Release ^
 	-DFILAMENT_SUPPORTS_VULKAN=ON ^
 	-DFILAMENT_SUPPORTS_OPENGL=ON ^
@@ -25,7 +25,7 @@ cmake ^
     -G Ninja ^
     -DCMAKE_INSTALL_PREFIX=..\debug-win\filament ^
     -DFILAMENT_ENABLE_JAVA=NO ^
-	-DFILAMENT_SKIP_SAMPLES=ON ^
+	-DFILAMENT_SKIP_SAMPLES=OFF ^
     -DCMAKE_BUILD_TYPE=Debug ^
 	-DFILAMENT_SUPPORTS_VULKAN=ON ^
 	-DFILAMENT_SUPPORTS_OPENGL=ON ^

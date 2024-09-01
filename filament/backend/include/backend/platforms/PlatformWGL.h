@@ -64,9 +64,10 @@ protected:
     void destroySwapChain(SwapChain* swapChain) noexcept override;
     void makeCurrent(SwapChain* drawSwapChain, SwapChain* readSwapChain) noexcept override;
     void commit(SwapChain* swapChain) noexcept override;
+    void onPostExecuted() noexcept override;
     bool onPreExecuted() noexcept override;
 public:
-    bool releaseContext = false;
+    int releaseContext = 0;
 protected:
     HGLRC mContext = NULL;
     HWND mHWnd = NULL;

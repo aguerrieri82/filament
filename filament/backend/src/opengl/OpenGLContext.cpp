@@ -315,8 +315,8 @@ void OpenGLContext::setDefaultState() noexcept {
     glHint(GL_FRAGMENT_SHADER_DERIVATIVE_HINT, GL_NICEST);
 #endif
 
-#if !defined(__EMSCRIPTEN__)
-    if (ext.EXT_clip_control) {
+#if !defined(__EMSCRIPTEN__) 
+    if (ext.EXT_clip_control) { //TODO: #AG# set to false to enable renderdoc OGL
 #if defined(BACKEND_OPENGL_VERSION_GL)
         glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 #elif defined(GL_EXT_clip_control)
