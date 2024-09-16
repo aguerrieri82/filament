@@ -219,8 +219,8 @@ Texture* IBLPrefilterContext::EquirectangularToCubemap::operator()(
     using namespace backend;
 
     const TextureCubemapFace faces[2][3] = {
-            { TextureCubemapFace::POSITIVE_X, TextureCubemapFace::NEGATIVE_Y, TextureCubemapFace::POSITIVE_Z },
-            { TextureCubemapFace::NEGATIVE_X, TextureCubemapFace::POSITIVE_Y, TextureCubemapFace::NEGATIVE_Z }
+            { TextureCubemapFace::POSITIVE_X, TextureCubemapFace::POSITIVE_Y, TextureCubemapFace::POSITIVE_Z },
+            { TextureCubemapFace::NEGATIVE_X, TextureCubemapFace::NEGATIVE_Y, TextureCubemapFace::NEGATIVE_Z }
     };
 
     Engine& engine = mContext.mEngine;
@@ -397,8 +397,8 @@ filament::Texture* IBLPrefilterContext::IrradianceFilter::operator()(
             << "outReflectionsTexture must be a cubemap.";
 
     const TextureCubemapFace faces[2][3] = {
-            { TextureCubemapFace::POSITIVE_X, TextureCubemapFace::NEGATIVE_Y, TextureCubemapFace::POSITIVE_Z },
-            { TextureCubemapFace::NEGATIVE_X, TextureCubemapFace::POSITIVE_Y, TextureCubemapFace::NEGATIVE_Z }
+            { TextureCubemapFace::POSITIVE_X, TextureCubemapFace::POSITIVE_Y, TextureCubemapFace::POSITIVE_Z },
+            { TextureCubemapFace::NEGATIVE_X, TextureCubemapFace::NEGATIVE_Y, TextureCubemapFace::NEGATIVE_Z }
     };
 
     Engine& engine = mContext.mEngine;
@@ -627,8 +627,8 @@ Texture* IBLPrefilterContext::SpecularFilter::operator()(
             << +mLevelCount << " are requested.";
 
     const TextureCubemapFace faces[2][3] = {
-            { TextureCubemapFace::POSITIVE_X, TextureCubemapFace::NEGATIVE_Y, TextureCubemapFace::POSITIVE_Z },
-            { TextureCubemapFace::NEGATIVE_X, TextureCubemapFace::POSITIVE_Y, TextureCubemapFace::NEGATIVE_Z }
+            { TextureCubemapFace::POSITIVE_X, TextureCubemapFace::POSITIVE_Y, TextureCubemapFace::POSITIVE_Z },
+            { TextureCubemapFace::NEGATIVE_X, TextureCubemapFace::NEGATIVE_Y, TextureCubemapFace::NEGATIVE_Z }
     };
 
     Engine& engine = mContext.mEngine;
