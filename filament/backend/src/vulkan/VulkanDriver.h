@@ -47,21 +47,6 @@ struct VulkanSamplerGroup;
 constexpr uint8_t MAX_RENDERTARGET_ATTACHMENT_TEXTURES =
         MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT * 2 + 1;
 
-// We need to store information about a render pass to enable better barriers at the end of a
-// renderpass.
-struct RenderPassFboBundle {
-    using AttachmentArray =
-            CappedArray<VulkanAttachment, MAX_RENDERTARGET_ATTACHMENT_TEXTURES>;
-
-    AttachmentArray attachments;
-    bool hasColorResolve = false;
-
-    void clear() {
-        attachments.clear();
-        hasColorResolve = false;
-    }
-};
-
 class VulkanDriver final : public DriverBase {
 public:
     static Driver* create(VulkanPlatform* platform, VulkanContext const& context,
@@ -130,10 +115,6 @@ private:
     VulkanPlatform* mPlatform = nullptr;
     std::unique_ptr<VulkanTimestamps> mTimestamps;
 
-    // Placeholder resources
-    VulkanTexture* mEmptyTexture;
-    VulkanBufferObject* mEmptyBufferObject;
-
     VulkanSwapChain* mCurrentSwapChain = nullptr;
     VulkanRenderTarget* mDefaultRenderTarget = nullptr;
     VulkanRenderPass mCurrentRenderPass = {};
@@ -159,15 +140,19 @@ private:
     VulkanReadPixels mReadPixels;
     VulkanDescriptorSetManager mDescriptorSetManager;
 
-    VulkanDescriptorSetManager::GetPipelineLayoutFunction mGetPipelineFunction;
-
     // This is necessary for us to write to push constants after binding a pipeline.
-    struct BoundPipeline {
+    struct {
         VulkanProgram* program;
         VkPipelineLayout pipelineLayout;
-    };
-    BoundPipeline mBoundPipeline = {};
-    RenderPassFboBundle mRenderPassFboInfo;
+        DescriptorSetMask descriptorSetMask;
+    } mBoundPipeline = {};
+
+    // We need to store information about a render pass to enable better barriers at the end of a
+    // renderpass.
+    struct {
+        using AttachmentArray = CappedArray<VulkanAttachment, MAX_RENDERTARGET_ATTACHMENT_TEXTURES>;
+        AttachmentArray attachments;
+    } mRenderPassFboInfo = {};
 
     bool const mIsSRGBSwapChainSupported;
     backend::StereoscopicType const mStereoscopicType;

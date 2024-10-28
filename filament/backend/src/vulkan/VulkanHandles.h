@@ -21,6 +21,7 @@
 #include "DriverBase.h"
 
 #include "VulkanBuffer.h"
+#include "VulkanFboCache.h"
 #include "VulkanResources.h"
 #include "VulkanSwapChain.h"
 #include "VulkanTexture.h"
@@ -29,39 +30,52 @@
 #include <private/backend/SamplerGroup.h>
 #include <backend/Program.h>
 
+#include <utils/bitset.h>
 #include <utils/FixedCapacityVector.h>
 #include <utils/Mutex.h>
 #include <utils/StructureOfArrays.h>
 
 namespace filament::backend {
 
-using namespace descset;
+namespace {
+// Counts the total number of descriptors for both vertex and fragment stages.
+template<typename Bitmask>
+inline uint8_t collapsedCount(Bitmask const& mask) {
+    static_assert(sizeof(mask) <= 64);
+    constexpr uint64_t VERTEX_MASK = (1ULL << getFragmentStageShift<Bitmask>()) - 1ULL;
+    constexpr uint64_t FRAGMENT_MASK = (VERTEX_MASK << getFragmentStageShift<Bitmask>());
+    uint64_t val = mask.getValue();
+    val = ((val & VERTEX_MASK) >> getVertexStageShift<Bitmask>()) |
+        ((val & FRAGMENT_MASK) >> getFragmentStageShift<Bitmask>());
+    return (uint8_t) Bitmask(val).count();
+}
+
+} // anonymous namespace
 
 class VulkanTimestamps;
+struct VulkanBufferObject;
 
-struct VulkanDescriptorSetLayout : public VulkanResource {
-    static constexpr uint8_t UNIQUE_DESCRIPTOR_SET_COUNT = 3;
+struct VulkanDescriptorSetLayout : public VulkanResource, HwDescriptorSetLayout {
+    static constexpr uint8_t UNIQUE_DESCRIPTOR_SET_COUNT = 4;
+    static constexpr uint8_t MAX_BINDINGS = 25;
+
+    using DescriptorSetLayoutArray = std::array<VkDescriptorSetLayout,
+            VulkanDescriptorSetLayout::UNIQUE_DESCRIPTOR_SET_COUNT>;
 
     // The bitmask representation of a set layout.
     struct Bitmask {
-        UniformBufferBitmask ubo = 0;         // 4 bytes
-        UniformBufferBitmask dynamicUbo = 0;  // 4 bytes
-        SamplerBitmask sampler = 0;           // 8 bytes
-        InputAttachmentBitmask inputAttachment = 0; // 1 bytes
-
-        // Because we're using this struct as hash key, must make it's 8-bytes aligned, with no
-        // unaccounted bytes.
-        uint8_t padding0 = 0; // 1 bytes
-        uint16_t padding1 = 0;// 2 bytes
-        uint32_t padding2 = 0;// 4 bytes
+        // TODO: better utiltize the space below and use bitset instead.
+        UniformBufferBitmask ubo;         // 8 bytes
+        UniformBufferBitmask dynamicUbo;  // 8 bytes
+        SamplerBitmask sampler;           // 8 bytes
+        InputAttachmentBitmask inputAttachment; // 8 bytes
 
         bool operator==(Bitmask const& right) const {
             return ubo == right.ubo && dynamicUbo == right.dynamicUbo && sampler == right.sampler &&
                    inputAttachment == right.inputAttachment;
         }
-
-        static Bitmask fromBackendLayout(descset::DescriptorSetLayout const& layout);
     };
+    static_assert(sizeof(Bitmask) == 32);
 
     // This is a convenience struct to quickly check layout compatibility in terms of descriptor set
     // pools.
@@ -71,6 +85,10 @@ struct VulkanDescriptorSetLayout : public VulkanResource {
         uint32_t sampler = 0;
         uint32_t inputAttachment = 0;
 
+        inline uint32_t total() const {
+            return ubo + dynamicUbo + sampler + inputAttachment;
+        }
+
         bool operator==(Count const& right) const noexcept {
             return ubo == right.ubo && dynamicUbo == right.dynamicUbo && sampler == right.sampler &&
                    inputAttachment == right.inputAttachment;
@@ -78,10 +96,10 @@ struct VulkanDescriptorSetLayout : public VulkanResource {
 
         static inline Count fromLayoutBitmask(Bitmask const& mask) {
             return {
-                    .ubo = countBits(collapseStages(mask.ubo)),
-                    .dynamicUbo = countBits(collapseStages(mask.dynamicUbo)),
-                    .sampler = countBits(collapseStages(mask.sampler)),
-                    .inputAttachment = countBits(collapseStages(mask.inputAttachment)),
+                .ubo = collapsedCount(mask.ubo),
+                .dynamicUbo = collapsedCount(mask.dynamicUbo),
+                .sampler = collapsedCount(mask.sampler),
+                .inputAttachment = collapsedCount(mask.inputAttachment),
             };
         }
 
@@ -97,88 +115,64 @@ struct VulkanDescriptorSetLayout : public VulkanResource {
         }
     };
 
-    static_assert(sizeof(Bitmask) % 8 == 0);
+    VulkanDescriptorSetLayout(DescriptorSetLayout const& layout);
 
-    explicit VulkanDescriptorSetLayout(VkDevice device, VkDescriptorSetLayoutCreateInfo const& info,
-            Bitmask const& bitmask);
+    ~VulkanDescriptorSetLayout() = default;
 
-    ~VulkanDescriptorSetLayout();
+    VkDescriptorSetLayout getVkLayout() const { return mVkLayout; }
+    void setVkLayout(VkDescriptorSetLayout vklayout) { mVkLayout = vklayout; }
 
-    VkDevice const mDevice;
-    VkDescriptorSetLayout const vklayout;
     Bitmask const bitmask;
-
-    // This is a convenience struct so that we don't have to iterate through all the bits of the
-    // bitmask (which correspondings to binding indices).
-    struct _Bindings {
-        utils::FixedCapacityVector<uint8_t> const ubo;
-        utils::FixedCapacityVector<uint8_t> const dynamicUbo;
-        utils::FixedCapacityVector<uint8_t> const sampler;
-        utils::FixedCapacityVector<uint8_t> const inputAttachment;
-    } bindings;
-
     Count const count;
 
 private:
-
-    template <typename MaskType>
-    utils::FixedCapacityVector<uint8_t> bits(MaskType mask) {
-        utils::FixedCapacityVector<uint8_t> ret =
-                utils::FixedCapacityVector<uint8_t>::with_capacity(countBits(mask));
-        for (uint8_t i = 0; i < sizeof(mask) * 4; ++i) {
-            if (mask & (1 << i)) {
-                ret.push_back(i);
-            }
-        }
-        return ret;
-    }
-
-    _Bindings getBindings(Bitmask const& bitmask) {
-        auto const uboCollapsed = collapseStages(bitmask.ubo);
-        auto const dynamicUboCollapsed = collapseStages(bitmask.dynamicUbo);
-        auto const samplerCollapsed = collapseStages(bitmask.sampler);
-        auto const inputAttachmentCollapsed = collapseStages(bitmask.inputAttachment);
-        return {
-            bits(uboCollapsed),
-            bits(dynamicUboCollapsed),
-            bits(samplerCollapsed),
-            bits(inputAttachmentCollapsed),
-        };
-    }
+    VkDescriptorSetLayout mVkLayout = VK_NULL_HANDLE;
 };
 
-using VulkanDescriptorSetLayoutList = std::array<Handle<VulkanDescriptorSetLayout>,
-        VulkanDescriptorSetLayout::UNIQUE_DESCRIPTOR_SET_COUNT>;
-
-struct VulkanDescriptorSet : public VulkanResource {
+struct VulkanDescriptorSet : public VulkanResource, HwDescriptorSet {
 public:
     // Because we need to recycle descriptor sets not used, we allow for a callback that the "Pool"
     // can use to repackage the vk handle.
-    using OnRecycle = std::function<void()>;
+    using OnRecycle = std::function<void(VulkanDescriptorSet*)>;
 
-    VulkanDescriptorSet(VulkanResourceAllocator* allocator,
-            VkDescriptorSet rawSet, OnRecycle&& onRecycleFn)
+    VulkanDescriptorSet(VulkanResourceAllocator* allocator, VkDescriptorSet rawSet,
+            UniformBufferBitmask const& dynamicUboMask,
+            uint8_t uniqueDynamicUboCount,
+            OnRecycle&& onRecycleFn)
         : VulkanResource(VulkanResourceType::DESCRIPTOR_SET),
-          resources(allocator),
           vkSet(rawSet),
+          dynamicUboMask(dynamicUboMask),
+          uniqueDynamicUboCount(uniqueDynamicUboCount),
+          mResources(allocator),
           mOnRecycleFn(std::move(onRecycleFn)) {}
 
     ~VulkanDescriptorSet() {
         if (mOnRecycleFn) {
-            mOnRecycleFn();
+            mOnRecycleFn(this);
         }
     }
 
-    // TODO: maybe change to fixed size for performance.
-    VulkanAcquireOnlyResourceManager resources;
+    void setOffsets(backend::DescriptorSetOffsetArray&& offsets) noexcept {
+        mOffsets = std::move(offsets);
+    }
+
+    backend::DescriptorSetOffsetArray const* getOffsets() {
+        return &mOffsets;
+    }
+
+    void acquire(VulkanTexture* texture);
+
+    void acquire(VulkanBufferObject* texture);
+
     VkDescriptorSet const vkSet;
+    UniformBufferBitmask const dynamicUboMask;
+    uint8_t const uniqueDynamicUboCount;
 
 private:
+    backend::DescriptorSetOffsetArray mOffsets;
+    VulkanAcquireOnlyResourceManager mResources;
     OnRecycle mOnRecycleFn;
 };
-
-using VulkanDescriptorSetList = std::array<Handle<VulkanDescriptorSet>,
-        VulkanDescriptorSetLayout::UNIQUE_DESCRIPTOR_SET_COUNT>;
 
 using PushConstantNameArray = utils::FixedCapacityVector<char const*>;
 using PushConstantNameByStage = std::array<PushConstantNameArray, Program::SHADER_TYPE_COUNT>;
@@ -216,24 +210,6 @@ struct VulkanProgram : public HwProgram, VulkanResource {
 
     inline VkShaderModule getFragmentShader() const { return mInfo->shaders[1]; }
 
-    inline utils::FixedCapacityVector<uint16_t> const& getBindingToSamplerIndex() const {
-        return mInfo->bindingToSamplerIndex;
-    }
-
-    // Get a list of the sampler binding indices so that we don't have to loop through all possible
-    // samplers.
-    inline BindingList const& getBindings() const { return mInfo->bindings; }
-
-    // TODO: this is currently not used. This will replace getLayoutDescriptionList below.
-    // inline descset::DescriptorSetLayout const& getLayoutDescription() const {
-    //    return mInfo->layout;
-    // }
-    // In the usual case, we would have just one layout per program. But in the current setup, we
-    // have a set/layout for each descriptor type. This will be changed in the future.
-    using LayoutDescriptionList = std::array<descset::DescriptorSetLayout,
-            VulkanDescriptorSetLayout::UNIQUE_DESCRIPTOR_SET_COUNT>;
-    inline LayoutDescriptionList const& getLayoutDescriptionList() const { return mInfo->layouts; }
-
     inline uint32_t getPushConstantRangeCount() const {
         return mInfo->pushConstantDescription.getVkRangeCount();
     }
@@ -260,30 +236,11 @@ struct VulkanProgram : public HwProgram, VulkanResource {
 private:
     struct PipelineInfo {
         explicit PipelineInfo(backend::Program const& program) noexcept
-            : bindingToSamplerIndex(MAX_SAMPLER_COUNT, 0xffff),
-              pushConstantDescription(program)
-#if FVK_ENABLED_DEBUG_SAMPLER_NAME
-            , bindingToName(MAX_SAMPLER_COUNT, "")
-#endif
+            : pushConstantDescription(program)
             {}
 
-        BindingList bindings;
-
-        // We store the samplerGroupIndex as the top 8-bit and the index within each group as the lower 8-bit.
-        utils::FixedCapacityVector<uint16_t> bindingToSamplerIndex;
         VkShaderModule shaders[MAX_SHADER_MODULES] = { VK_NULL_HANDLE };
-
-        // TODO: Use this instead of `layouts` after Filament-side Descriptor Set API is in place.
-        // descset::DescriptorSetLayout layout;
-        LayoutDescriptionList layouts;
-
         PushConstantDescription pushConstantDescription;
-
-#if FVK_ENABLED_DEBUG_SAMPLER_NAME
-        // We store the sampler name mapped from binding index (only for debug purposes).
-        utils::FixedCapacityVector<std::string> bindingToName;
-#endif
-
     };
 
     PipelineInfo* mInfo;
@@ -302,7 +259,9 @@ struct VulkanRenderTarget : private HwRenderTarget, VulkanResource {
     // Creates an offscreen render target.
     VulkanRenderTarget(VkDevice device, VkPhysicalDevice physicalDevice,
             VulkanContext const& context, VmaAllocator allocator,
-            VulkanCommands* commands, uint32_t width, uint32_t height,
+            VulkanCommands* commands,
+            VulkanResourceAllocator* handleAllocator,
+            uint32_t width, uint32_t height,
             uint8_t samples, VulkanAttachment color[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT],
             VulkanAttachment depthStencil[2], VulkanStagePool& stagePool, uint8_t layerCount);
 
@@ -310,28 +269,68 @@ struct VulkanRenderTarget : private HwRenderTarget, VulkanResource {
     explicit VulkanRenderTarget();
 
     void transformClientRectToPlatform(VkRect2D* bounds) const;
-    void transformClientRectToPlatform(VkViewport* bounds) const;
-    VkExtent2D getExtent() const;
-    // We return references in the following methods to avoid a copy.
-    VulkanAttachment& getColor(int target);
-    VulkanAttachment& getMsaaColor(int target);
-    VulkanAttachment& getDepth();
-    VulkanAttachment& getMsaaDepth();
-    uint8_t getColorTargetCount(const VulkanRenderPass& pass) const;
-    uint8_t getSamples() const { return mSamples; }
-    uint8_t getLayerCount() const { return mLayerCount; }
-    bool hasDepth() const { return mDepth.texture; }
-    bool isSwapChain() const { return !mOffscreen; }
+
+    void transformViewportToPlatform(VkViewport* bounds) const;
+
+    inline VkExtent2D getExtent() const {
+        return {width, height};
+    }
+
+    inline VulkanAttachment const& getColor0() const {
+        assert_invariant(mInfo->colors[0]);
+        return mInfo->attachments[0];
+    }
+
+    inline VulkanAttachment const& getDepth() const {
+        assert_invariant(hasDepth());
+        if (mInfo->fbkey.samples == 1) {
+            return mInfo->attachments[mInfo->depthIndex];
+        }
+        return mInfo->attachments[mInfo->msaaDepthIndex];
+    }
+
+    inline VulkanFboCache::RenderPassKey const& getRenderPassKey() const {
+        return mInfo->rpkey;
+    }
+
+    inline VulkanFboCache::FboKey const& getFboKey() const {
+        return mInfo->fbkey;
+    }
+
+    inline uint8_t getSamples() const {
+        return mInfo->fbkey.samples;
+    }
+
+    uint8_t getColorTargetCount(VulkanRenderPass const& pass) const;
+
+    inline bool hasDepth() const { return mInfo->depthIndex != Auxiliary::UNDEFINED_INDEX; }
+
+    inline bool isSwapChain() const { return !mOffscreen; }
+
     void bindToSwapChain(VulkanSwapChain& surf);
 
+    void emitBarriersBeginRenderPass(VulkanCommandBuffer& commands);
+
+    void emitBarriersEndRenderPass(VulkanCommandBuffer& commands);
+
 private:
-    VulkanAttachment mColor[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT] = {};
-    VulkanAttachment mDepth = {};
-    VulkanAttachment mMsaaAttachments[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT] = {};
-    VulkanAttachment mMsaaDepthAttachment = {};
-    const bool mOffscreen : 1;
-    uint8_t mSamples : 7;
-    uint8_t mLayerCount = 1;
+    struct Auxiliary {
+        static constexpr int8_t UNDEFINED_INDEX = -1;
+
+        explicit Auxiliary() noexcept = default;
+
+        VulkanFboCache::RenderPassKey rpkey = {};
+        VulkanFboCache::FboKey fbkey = {};
+        std::vector<VulkanAttachment> attachments;
+        utils::bitset32 colors;
+        int8_t depthIndex = UNDEFINED_INDEX;
+        int8_t msaaDepthIndex = UNDEFINED_INDEX;
+        int8_t msaaIndex = UNDEFINED_INDEX;
+    };
+    bool const mOffscreen;
+
+    VulkanAcquireOnlyResourceManager mResources;
+    std::unique_ptr<Auxiliary> mInfo;
 };
 
 struct VulkanBufferObject;
@@ -483,6 +482,7 @@ private:
     std::shared_ptr<VulkanCmdFence> mFence;
     utils::Mutex mFenceMutex;
 };
+
 
 inline constexpr VkBufferUsageFlagBits getBufferObjectUsage(
         BufferObjectBinding bindingType) noexcept {

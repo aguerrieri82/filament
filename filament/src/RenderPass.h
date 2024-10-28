@@ -58,6 +58,7 @@ class CommandBufferQueue;
 class FMaterialInstance;
 class FRenderPrimitive;
 class RenderPassBuilder;
+class ColorPassDescriptorSet;
 
 class RenderPass {
 public:
@@ -244,25 +245,25 @@ public:
             FMaterialInstance const* mi;
             uint64_t padding; // make this field 64 bits on all platforms
         };
-        backend::RenderPrimitiveHandle rph;                             // 4 bytes
-        backend::VertexBufferInfoHandle vbih;                           // 4 bytes
-        backend::BufferObjectHandle boh;                                // 4 bytes
-        uint32_t indexOffset;                                           // 4 bytes
-        uint32_t indexCount;                                            // 4 bytes
-        uint32_t index = 0;                                             // 4 bytes
-        backend::SamplerGroupHandle morphTargetBuffer;                  // 4 bytes
-        uint32_t morphingOffset = 0;                                    // 4 bytes
+        backend::RenderPrimitiveHandle rph;                 // 4 bytes
+        backend::VertexBufferInfoHandle vbih;               // 4 bytes
+        backend::DescriptorSetHandle dsh;                   // 4 bytes
+        uint32_t indexOffset;                               // 4 bytes
+        uint32_t indexCount;                                // 4 bytes
+        uint32_t index = 0;                                 // 4 bytes
+        uint32_t skinningOffset = 0;                        // 4 bytes
+        uint32_t morphingOffset = 0;                        // 4 bytes
 
-        backend::RasterState rasterState;                               // 4 bytes
+        backend::RasterState rasterState;                   // 4 bytes
 
-        uint16_t instanceCount;                                         // 2 bytes [MSb: user]
-        Variant materialVariant;                                        // 1 byte
-        backend::PrimitiveType type : 3;                                // 1 byte       3 bits
-        bool hasSkinning : 1;                                           //              1 bit
-        bool hasMorphing : 1;                                           //              1 bit
-        bool hasHybridInstancing : 1;                                   //              1 bit
+        uint16_t instanceCount;                             // 2 bytes [MSb: user]
+        Variant materialVariant;                            // 1 byte
+        backend::PrimitiveType type : 3;                    // 1 byte       3 bits
+        bool hasSkinning : 1;                               //              1 bit
+        bool hasMorphing : 1;                               //              1 bit
+        bool hasHybridInstancing : 1;                       //              1 bit
 
-        uint32_t rfu[2];                                                // 16 bytes
+        uint32_t rfu[2];                                    // 16 bytes
     };
     static_assert(sizeof(PrimitiveInfo) == 56);
 
@@ -322,8 +323,18 @@ public:
         void operator()(backend::BufferObjectHandle handle) noexcept;
     };
 
+    class DescriptorSetHandleDeleter {
+        std::reference_wrapper<backend::DriverApi> driver;
+    public:
+        explicit DescriptorSetHandleDeleter(backend::DriverApi& driver) noexcept : driver(driver) { }
+        void operator()(backend::DescriptorSetHandle handle) noexcept;
+    };
+
     using BufferObjectSharedHandle = SharedHandle<
             backend::HwBufferObject, BufferObjectHandleDeleter>;
+
+    using DescriptorSetSharedHandle = SharedHandle<
+            backend::HwDescriptorSet, DescriptorSetHandleDeleter>;
 
     /*
      * Executor holds the range of commands to execute for a given pass
@@ -334,19 +345,24 @@ public:
         friend class RenderPassBuilder;
 
         // these fields are constant after creation
-        FScene::RenderableSoa const* mRenderableSoa = nullptr;
         utils::Slice<Command> mCommands;
         utils::Slice<CustomCommandFn> mCustomCommands;
         BufferObjectSharedHandle mInstancedUboHandle;
-        backend::Viewport mScissorViewport;
+        DescriptorSetSharedHandle mInstancedDescriptorSetHandle;
+        ColorPassDescriptorSet const* mColorPassDescriptorSet = nullptr;
+        // this stores either the scissor-viewport or the scissor override
+        backend::Viewport mScissor{ 0, 0, INT32_MAX, INT32_MAX };
 
-        backend::Viewport mScissor{};            // value of scissor override
-        backend::PolygonOffset mPolygonOffset{}; // value of the override
-        bool mPolygonOffsetOverride : 1;         // whether to override the polygon offset setting
-        bool mScissorOverride : 1;               // whether to override the polygon offset setting
+        // value of the polygon offset override
+        backend::PolygonOffset mPolygonOffset{};
+        // whether to override the polygon offset from the MaterialInstance
+        bool mPolygonOffsetOverride : 1;
+        // whether to override the scissor rectangle from the MaterialInstance
+        bool mScissorOverride : 1;
+        // whether the scissor-viewport is set
+        bool mHasScissorViewport : 1;
 
-        Executor(RenderPass const* pass, Command const* b, Command const* e,
-                BufferObjectSharedHandle instancedUbo) noexcept;
+        Executor(RenderPass const& pass, Command const* b, Command const* e) noexcept;
 
         void execute(FEngine& engine, const Command* first, const Command* last) const noexcept;
 
@@ -355,6 +371,7 @@ public:
                 backend::Viewport const& scissor) noexcept;
 
     public:
+        // fixme: needed in ShadowMapManager
         Executor() noexcept;
 
         // can't be copied
@@ -370,8 +387,6 @@ public:
         // if non-null, overrides the material's polygon offset
         void overridePolygonOffset(backend::PolygonOffset const* polygonOffset) noexcept;
 
-        // if non-null, overrides the material's scissor
-        void overrideScissor(backend::Viewport const* scissor) noexcept;
         void overrideScissor(backend::Viewport const& scissor) noexcept;
 
         void execute(FEngine& engine, const char* name) const noexcept;
@@ -383,7 +398,7 @@ public:
     }
 
     Executor getExecutor(Command const* b, Command const* e) const {
-        return { this, b, e, mInstancedUboHandle };
+        return { *this, b, e };
     }
 
 private:
@@ -395,8 +410,7 @@ private:
     // the current camera, geometry and flags set. This can be called multiple times if needed.
     void appendCommands(FEngine& engine,
             utils::Slice<Command> commands,
-            backend::BufferObjectHandle uboHandle,
-            utils::Range<uint32_t> const visibleRenderables,
+            utils::Range<uint32_t> visibleRenderables,
             CommandTypeFlags commandTypeFlags,
             RenderFlags renderFlags,
             FScene::VisibleMaskType visibilityMask,
@@ -409,7 +423,7 @@ private:
             uint8_t channel, Pass pass, CustomCommand custom, uint32_t order,
             Executor::CustomCommandFn command);
 
-    static Command* resize(Arena& arena, Command* const last) noexcept;
+    static Command* resize(Arena& arena, Command* last) noexcept;
 
     // sorts commands then trims sentinels
     static Command* sortCommands(
@@ -430,16 +444,14 @@ private:
 
     static inline void generateCommands(CommandTypeFlags commandTypeFlags, Command* commands,
             FScene::RenderableSoa const& soa, utils::Range<uint32_t> range,
-            backend::BufferObjectHandle renderablesUbo,
             Variant variant, RenderFlags renderFlags,
             FScene::VisibleMaskType visibilityMask,
             math::float3 cameraPosition, math::float3 cameraForward,
             uint8_t instancedStereoEyeCount) noexcept;
 
     template<RenderPass::CommandTypeFlags commandTypeFlags>
-    static inline Command* generateCommandsImpl(RenderPass::CommandTypeFlags extraFlags, Command* curr,
-            FScene::RenderableSoa const& soa, utils::Range<uint32_t> range,
-            backend::BufferObjectHandle renderablesUbo,
+    static inline RenderPass::Command* generateCommandsImpl(RenderPass::CommandTypeFlags extraFlags,
+            Command* curr, FScene::RenderableSoa const& soa, utils::Range<uint32_t> range,
             Variant variant, RenderFlags renderFlags, FScene::VisibleMaskType visibilityMask,
             math::float3 cameraPosition, math::float3 cameraForward,
             uint8_t instancedStereoEyeCount) noexcept;
@@ -451,11 +463,12 @@ private:
             FScene::RenderableSoa& renderableData, utils::Range<uint32_t> vr) noexcept;
 
     FScene::RenderableSoa const& mRenderableSoa;
-    backend::Viewport const mScissorViewport;
+    ColorPassDescriptorSet const* const mColorPassDescriptorSet;
+    backend::Viewport const mScissorViewport{ 0, 0, INT32_MAX, INT32_MAX };
     Command const* /* const */ mCommandBegin = nullptr;   // Pointer to the first command
     Command const* /* const */ mCommandEnd = nullptr;     // Pointer to one past the last command
-    // a UBO for instanced primitives
-    mutable BufferObjectSharedHandle mInstancedUboHandle;
+    mutable BufferObjectSharedHandle mInstancedUboHandle; // ubo for instanced primitives
+    mutable DescriptorSetSharedHandle mInstancedDescriptorSetHandle; // a descriptor-set to hold the ubo
     // a vector for our custom commands
     using CustomCommandVector = std::vector<Executor::CustomCommandFn,
             utils::STLAllocator<Executor::CustomCommandFn, LinearAllocatorArena>>;
@@ -470,11 +483,11 @@ class RenderPassBuilder {
     backend::Viewport mScissorViewport{ 0, 0, INT32_MAX, INT32_MAX };
     FScene::RenderableSoa const* mRenderableSoa = nullptr;
     utils::Range<uint32_t> mVisibleRenderables{};
-    backend::Handle<backend::HwBufferObject> mUboHandle;
     math::float3 mCameraPosition{};
     math::float3 mCameraForwardVector{};
     RenderPass::RenderFlags mFlags{};
     Variant mVariant{};
+    ColorPassDescriptorSet const* mColorPassDescriptorSet = nullptr;
     FScene::VisibleMaskType mVisibilityMask = std::numeric_limits<FScene::VisibleMaskType>::max();
 
     using CustomCommandRecord = std::tuple<
@@ -499,17 +512,18 @@ public:
         return *this;
     }
 
+    // Specifies the viewport for the scissor rectangle, that is, the final scissor rect is
+    // offset by the viewport's left-top and clipped to the viewport's width/height.
     RenderPassBuilder& scissorViewport(backend::Viewport viewport) noexcept {
         mScissorViewport = viewport;
         return *this;
     }
 
     // specifies the geometry to generate commands for
-    RenderPassBuilder& geometry(FScene::RenderableSoa const& soa, utils::Range<uint32_t> vr,
-            backend::Handle<backend::HwBufferObject> uboHandle) noexcept {
+    RenderPassBuilder& geometry(
+            FScene::RenderableSoa const& soa, utils::Range<uint32_t> vr) noexcept {
         mRenderableSoa = &soa;
         mVisibleRenderables = vr;
-        mUboHandle = uboHandle;
         return *this;
     }
 
@@ -538,6 +552,12 @@ public:
     // variant to use
     RenderPassBuilder& variant(Variant variant) noexcept {
         mVariant = variant;
+        return *this;
+    }
+
+    // variant to use
+    RenderPassBuilder& colorPassDescriptorSet(ColorPassDescriptorSet const* colorPassDescriptorSet) noexcept {
+        mColorPassDescriptorSet = colorPassDescriptorSet;
         return *this;
     }
 

@@ -407,8 +407,10 @@ void FRenderer::endFrame(bool commitSwapChain) {
         driver.debugThreading();
     }
 
-    if (mSwapChain && commitSwapChain) {
-        mSwapChain->commit(driver);
+    FILAMENT_CHECK_PRECONDITION(engine.isValid(mSwapChain))
+        << "SwapChain must remain valid until endFrame is called.";
+    
+    if (mSwapChain && commitSwapChain) {        mSwapChain->commit(driver);
         mSwapChain = nullptr;
     }
 
@@ -455,6 +457,15 @@ void FRenderer::readPixels(uint32_t xoffset, uint32_t yoffset, uint32_t width, u
 void FRenderer::readPixels(FRenderTarget* renderTarget,
         uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
         backend::PixelBufferDescriptor&& buffer) {
+
+    // TODO: change the following to an assert when client call sites have addressed the issue.
+    if (!renderTarget->supportsReadPixels()) {
+        utils::slog.w << "readPixels() must be called with a renderTarget with COLOR0 created with "
+                         "TextureUsage::BLIT_SRC.  This precondition will be asserted in a later "
+                         "release of Filament."
+                      << utils::io::endl;
+    }
+
     RendererUtils::readPixels(mEngine.getDriverApi(), renderTarget->getHwHandle(),
             xoffset, yoffset, width, height, std::move(buffer));
 }
@@ -536,6 +547,12 @@ void FRenderer::renderStandaloneView(FView const* view) {
         renderInternal(view);
 
         driver.endFrame(mFrameId);
+
+        // This is a workaround for internal bug b/361822355.
+        // TODO: properly address the bug and remove this workaround.
+        if (engine.getBackend() == backend::Backend::VULKAN) {
+            engine.flushAndWait();
+        }
     }
 }
 
@@ -588,6 +605,7 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
     JobSystem& js = engine.getJobSystem();
     FEngine::DriverApi& driver = engine.getDriverApi();
     PostProcessManager& ppm = engine.getPostProcessManager();
+    ppm.setFrameUniforms(driver, view.getFrameUniforms());
 
     // DEBUG: driver commands must all happen from the same thread. Enforce that on debug builds.
     driver.debugThreading();
@@ -795,7 +813,7 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
     passBuilder.renderFlags(renderFlags);
 
     Variant variant;
-    variant.setDirectionalLighting(view.hasDirectionalLight());
+    variant.setDirectionalLighting(view.hasDirectionalLighting());
     variant.setDynamicLighting(view.hasDynamicLighting());
     variant.setFog(view.hasFog());
     variant.setVsm(view.hasShadowing() && view.getShadowType() != ShadowType::PCF);
@@ -906,9 +924,7 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
             scene.getRenderableData(), view.getVisibleRenderables());
 
     passBuilder.camera(cameraInfo);
-    passBuilder.geometry(scene.getRenderableData(),
-            view.getVisibleRenderables(),
-            view.getRenderableUBO());
+    passBuilder.geometry(scene.getRenderableData(), view.getVisibleRenderables());
 
     // view set-ups that need to happen before rendering
     fg.addTrivialSideEffectPass("Prepare View Uniforms",
@@ -942,34 +958,89 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
                             uint32_t(float(xvp.width ) * aoOptions.resolution),
                             uint32_t(float(xvp.height) * aoOptions.resolution)});
 
-                view.commitUniforms(driver);
-
-                // set uniforms and samplers for the color passes
-                view.bindPerViewUniformsAndSamplers(driver);
+                view.commitUniformsAndSamplers(driver);
             });
 
     // --------------------------------------------------------------------------------------------
     // structure pass -- automatically culled if not used
     // Currently it consists of a simple depth pass.
-    // This is normally used by SSAO and contact-shadows
+    // This is normally used by SSAO and contact-shadows.
+    // Also, picking is handled here if transparent picking is disabled.
 
     // TODO: the scaling should depends on all passes that need the structure pass
     const auto [structure, picking_] = ppm.structure(fg,
             passBuilder, renderFlags, svp.width, svp.height, {
             .scale = aoOptions.resolution,
-            .picking = view.hasPicking()
+            .picking = view.hasPicking() && !view.isTransparentPickingEnabled()
     });
-    const auto picking = picking_;
+    auto picking = picking_;
 
+    // --------------------------------------------------------------------------------------------
+    // Picking pass -- automatically culled if not used
+    // Picking is handled here if transparent picking is enabled.
 
     if (view.hasPicking()) {
+        if (view.isTransparentPickingEnabled()) {
+            struct PickingRenderPassData {
+                FrameGraphId<FrameGraphTexture> depth;
+                FrameGraphId<FrameGraphTexture> picking;
+            };
+            auto& pickingRenderPass = fg.addPass<PickingRenderPassData>("Picking Render Pass",
+                [&](FrameGraph::Builder& builder, auto& data) {
+                    bool const isFL0 = mEngine.getDriverApi().getFeatureLevel() == 
+                        FeatureLevel::FEATURE_LEVEL_0;
+
+                    // TODO: Specify the precision for picking pass
+                    uint32_t const width = std::max(32u,
+                        (uint32_t)std::ceil(float(svp.width) * aoOptions.resolution));
+                    uint32_t const height = std::max(32u,
+                        (uint32_t)std::ceil(float(svp.height) * aoOptions.resolution));
+                    data.depth = builder.createTexture("Depth Buffer", {
+                            .width = width, .height = height,
+                            .format = isFL0 ? TextureFormat::DEPTH24 : TextureFormat::DEPTH32F });
+
+                    data.depth = builder.write(data.depth,
+                        FrameGraphTexture::Usage::DEPTH_ATTACHMENT);
+
+                    data.picking = builder.createTexture("Picking Buffer", {
+                            .width = width, .height = height,
+                            .format = isFL0 ? TextureFormat::RGBA8 : TextureFormat::RG32F });
+
+                    data.picking = builder.write(data.picking,
+                        FrameGraphTexture::Usage::COLOR_ATTACHMENT);
+
+                    builder.declareRenderPass("Picking Render Target", {
+                            .attachments = {.color = { data.picking }, .depth = data.depth },
+                            .clearFlags = TargetBufferFlags::COLOR0 | TargetBufferFlags::DEPTH
+                        });
+                },
+                [=, passBuilder = passBuilder](FrameGraphResources const& resources,
+                    auto const& data, DriverApi& driver) mutable {
+                        Variant pickingVariant(Variant::DEPTH_VARIANT);
+                        pickingVariant.setPicking(true);
+
+                        auto out = resources.getRenderPassInfo();
+                        passBuilder.renderFlags(renderFlags);
+                        passBuilder.variant(pickingVariant);
+                        passBuilder.commandTypeFlags(RenderPass::CommandTypeFlags::DEPTH);
+
+                        RenderPass const pass{ passBuilder.build(mEngine) };
+                        RenderPass::execute(pass, mEngine, resources.getPassName(), out.target, out.params);
+                });
+            picking = pickingRenderPass->picking;
+        }
+
         struct PickingResolvePassData {
             FrameGraphId<FrameGraphTexture> picking;
         };
-        fg.addPass<PickingResolvePassData>("Picking Resolve Pass",
+        fg.addPass<PickingResolvePassData>(
+                "Picking Resolve Pass",
                 [&](FrameGraph::Builder& builder, auto& data) {
-                    data.picking = builder.read(picking,
-                            FrameGraphTexture::Usage::COLOR_ATTACHMENT);
+                    // Note that BLIT_SRC is needed because this texture will be read later (via
+                    // readPixels()).
+                    data.picking =
+                            builder.read(picking, FrameGraphTexture::Usage::COLOR_ATTACHMENT |
+                                                          FrameGraphTexture::Usage::BLIT_SRC);
                     builder.declareRenderPass("Picking Resolve Target", {
                             .attachments = { .color = { data.picking }}
                     });
@@ -985,8 +1056,15 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
     // Store this frame's camera projection in the frame history.
     if (UTILS_UNLIKELY(taaOptions.enabled)) {
         // Apply the TAA jitter to everything after the structure pass, starting with the color pass.
-        ppm.prepareTaa(fg, svp, taaOptions, view.getFrameHistory(), &FrameHistoryEntry::taa,
-                &cameraInfo, view.getPerViewUniforms());
+        ppm.TaaJitterCamera(svp, taaOptions, view.getFrameHistory(),
+                &FrameHistoryEntry::taa, &cameraInfo);
+
+        fg.addTrivialSideEffectPass("Jitter Camera",
+                [&engine, &cameraInfo, &descriptorSet = view.getColorPassDescriptorSet()]
+                (DriverApi& driver) {
+                    descriptorSet.prepareCamera(engine, cameraInfo);
+                    descriptorSet.commit(driver);
+                });
     }
 
     // --------------------------------------------------------------------------------------------
@@ -1013,16 +1091,11 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
     if (ssReflectionsOptions.enabled) {
         auto reflections = ppm.ssr(fg, passBuilder,
                 view.getFrameHistory(), cameraInfo,
-                view.getPerViewUniforms(),
                 structure,
                 ssReflectionsOptions,
                 { .width = svp.width, .height = svp.height });
 
         if (UTILS_LIKELY(reflections)) {
-            fg.addTrivialSideEffectPass("SSR Cleanup", [&view](DriverApi& driver) {
-                view.getPerViewUniforms().prepareStructure({});
-                view.commitUniforms(driver);
-            });
             // generate the mipchain
             PostProcessManager::generateMipmapSSR(ppm, fg,
                     reflections, ssrConfig.reflection, false, ssrConfig);
@@ -1037,11 +1110,18 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
     // FIXME: we should use 'vp' when rendering directly into the swapchain, but that's hard to
     //        know at this point. This will usually be the case when post-process is disabled.
     // FIXME: we probably should take the dynamic scaling into account too
-    passBuilder.scissorViewport(hasPostProcess ? xvp : vp);
+    // if MSAA is enabled, we end-up rendering in an intermediate buffer. This is the only case where
+    // "!hasPostProcess" doesn't guarantee rendering into the swapchain.
+    const bool useIntermediateBuffer = hasPostProcess || msaaOptions.enabled ||
+          (isRenderingMultiview && engine.debug.stereo.combine_multiview_images);
+    passBuilder.scissorViewport(useIntermediateBuffer ? xvp : vp);
 
     // This one doesn't need to be a FrameGraph pass because it always happens by construction
     // (i.e. it won't be culled, unless everything is culled), so no need to complexify things.
     passBuilder.variant(variant);
+
+    // This is optional, if not set, the per-view descriptor-set must be set before calling execute()
+    passBuilder.colorPassDescriptorSet(&view.getColorPassDescriptorSet());
 
     // color-grading as subpass is done either by the color pass or the TAA pass if any
     auto colorGradingConfigForColor = colorGradingConfig;
@@ -1138,12 +1218,6 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
         }
     }
 
-    fg.addTrivialSideEffectPass("Finish Color Passes", [&view](DriverApi& driver) {
-        // Unbind SSAO sampler, b/c the FrameGraph will delete the texture at the end of the pass.
-        view.cleanupRenderPasses();
-        view.commitUniforms(driver);
-    });
-
     if (colorGradingConfig.customResolve) {
         assert_invariant(fg.getDescriptor(colorPassOutput.linearColor).samples <= 1);
         // TODO: we have to "uncompress" (i.e. detonemap) the color buffer here because it's used
@@ -1196,7 +1270,7 @@ void FRenderer::renderJob(RootArenaScope& rootArenaScope, FView& view) {
 
     // Debug: CSM visualisation
     if (UTILS_UNLIKELY(engine.debug.shadowmap.visualize_cascades &&
-                       view.hasShadowing() && view.hasDirectionalLight())) {
+                       view.hasShadowing() && view.hasDirectionalLighting())) {
         input = ppm.debugShadowCascades(fg, input, depth);
     }
 

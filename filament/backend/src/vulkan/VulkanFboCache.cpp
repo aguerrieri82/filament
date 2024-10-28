@@ -31,7 +31,6 @@ namespace filament::backend {
 
 bool VulkanFboCache::RenderPassEq::operator()(const RenderPassKey& k1,
         const RenderPassKey& k2) const {
-    if (k1.initialColorLayoutMask != k2.initialColorLayoutMask) return false;
     if (k1.initialDepthLayout != k2.initialDepthLayout) return false;
     for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
         if (k1.colorFormat[i] != k2.colorFormat[i]) return false;
@@ -42,6 +41,7 @@ bool VulkanFboCache::RenderPassEq::operator()(const RenderPassKey& k1,
     if (k1.discardEnd != k2.discardEnd) return false;
     if (k1.samples != k2.samples) return false;
     if (k1.needsResolveMask != k2.needsResolveMask) return false;
+    if (k1.usesLazilyAllocatedMemory != k2.usesLazilyAllocatedMemory) return false;
     if (k1.subpassMask != k2.subpassMask) return false;
     if (k1.viewCount != k2.viewCount) return false;
     return true;
@@ -69,8 +69,8 @@ VulkanFboCache::~VulkanFboCache() {
             << "Please explicitly call terminate() while the VkDevice is still alive.";
 }
 
-VkFramebuffer VulkanFboCache::getFramebuffer(FboKey config) noexcept {
-    auto iter = mFramebufferCache.find(config);
+VkFramebuffer VulkanFboCache::getFramebuffer(FboKey const& config) noexcept {
+    FboMap::iterator iter = mFramebufferCache.find(config);
     if (UTILS_LIKELY(iter != mFramebufferCache.end() && iter->second.handle != VK_NULL_HANDLE)) {
         iter.value().timestamp = mCurrentTime;
         return iter->second.handle;
@@ -121,7 +121,7 @@ VkFramebuffer VulkanFboCache::getFramebuffer(FboKey config) noexcept {
     return framebuffer;
 }
 
-VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
+VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey const& config) noexcept {
     auto iter = mRenderPassCache.find(config);
     if (UTILS_LIKELY(iter != mRenderPassCache.end() && iter->second.handle != VK_NULL_HANDLE)) {
         iter.value().timestamp = mCurrentTime;
@@ -255,12 +255,10 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
             .format = config.colorFormat[i],
             .samples = (VkSampleCountFlagBits) config.samples,
             .loadOp = clear ? kClear : (discard ? kDontCare : kKeep),
-            .storeOp = kEnableStore,
+            .storeOp = (config.usesLazilyAllocatedMemory & (1 << i)) ? kDisableStore : kEnableStore,
             .stencilLoadOp = kDontCare,
             .stencilStoreOp = kDisableStore,
-            .initialLayout = ((!discard && config.initialColorLayoutMask & (1 << i)) || clear)
-                                     ? imgutil::getVkLayout(VulkanLayout::COLOR_ATTACHMENT)
-                                     : imgutil::getVkLayout(VulkanLayout::UNDEFINED),
+            .initialLayout = imgutil::getVkLayout(VulkanLayout::COLOR_ATTACHMENT),
             .finalLayout = imgutil::getVkLayout(FINAL_COLOR_ATTACHMENT_LAYOUT),
         };
     }
@@ -364,7 +362,7 @@ void VulkanFboCache::gc() noexcept {
     }
     const uint32_t evictTime = mCurrentTime - TIME_BEFORE_EVICTION;
 
-    for (auto iter = mFramebufferCache.begin(); iter != mFramebufferCache.end(); ++iter) {
+    for (FboMap::iterator iter = mFramebufferCache.begin(); iter != mFramebufferCache.end(); ++iter) {
         const FboVal fbo = iter->second;
         if (fbo.timestamp < evictTime && fbo.handle) {
             mRenderPassRefCount[iter->first.renderPass]--;

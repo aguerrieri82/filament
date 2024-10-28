@@ -73,10 +73,11 @@ public:
     enum class Type {
         NONE = 0,
         GENERIC = 1,
-        RING = 2,
+        RING = 2,       // deprecated
         STAGING = 3,
+        DESCRIPTOR_SET = 4,
     };
-    static constexpr size_t TypeCount = 3;
+    static constexpr size_t TypeCount = 4;
 
     static constexpr auto toIndex(Type t) {
         assert_invariant(t != Type::NONE);
@@ -88,6 +89,8 @@ public:
                 return 1;
             case Type::STAGING:
                 return 2;
+            case Type::DESCRIPTOR_SET:
+                return 3;
         }
     }
 
@@ -171,8 +174,10 @@ public:
      * Update the buffer with data inside src. Potentially allocates a new buffer allocation to hold
      * the bytes which will be released when the current frame is finished.
      */
-    void copyIntoBuffer(void* src, size_t size, size_t byteOffset);
-    void copyIntoBufferUnsynchronized(void* src, size_t size, size_t byteOffset);
+    using TagResolver = utils::Invocable<const char*(void)>;
+    void copyIntoBuffer(void* src, size_t size, size_t byteOffset, TagResolver&& getHandleTag);
+    void copyIntoBufferUnsynchronized(
+            void* src, size_t size, size_t byteOffset, TagResolver&& getHandleTag);
 
     /**
      * Denotes that this buffer is used for a draw call ensuring that its allocation remains valid
@@ -182,7 +187,7 @@ public:
      * is no device allocation.
      *
      */
-    id<MTLBuffer> getGpuBufferForDraw(id<MTLCommandBuffer> cmdBuffer) noexcept;
+    id<MTLBuffer> getGpuBufferForDraw() noexcept;
 
     void* getCpuBuffer() const noexcept { return mCpuBuffer; }
 
@@ -211,8 +216,10 @@ private:
         BUMP_ALLOCATOR,
     };
 
-    void uploadWithPoolBuffer(void* src, size_t size, size_t byteOffset) const;
-    void uploadWithBumpAllocator(void* src, size_t size, size_t byteOffset) const;
+    void uploadWithPoolBuffer(
+            void* src, size_t size, size_t byteOffset, TagResolver&& getHandleTag) const;
+    void uploadWithBumpAllocator(
+            void* src, size_t size, size_t byteOffset, TagResolver&& getHandleTag) const;
 
     UploadStrategy mUploadStrategy;
     TrackedMetalBuffer mBuffer;

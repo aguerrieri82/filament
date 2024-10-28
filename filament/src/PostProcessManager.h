@@ -21,25 +21,40 @@
 
 #include "FrameHistory.h"
 
-#include <fg/FrameGraphId.h>
-#include <fg/FrameGraphResources.h>
-
-#include <filament/Options.h>
-
-#include <backend/DriverEnums.h>
-#include <backend/PipelineState.h>
+#include "ds/PostProcessDescriptorSet.h"
+#include "ds/SsrPassDescriptorSet.h"
+#include "ds/TypedUniformBuffer.h"
 
 #include <private/filament/Variant.h>
 
-#include <utils/CString.h>
-#include <utils/FixedCapacityVector.h>
+#include <fg/FrameGraphId.h>
+#include <fg/FrameGraphResources.h>
+#include <fg/FrameGraphTexture.h>
+
+#include <filament/Options.h>
+#include <filament/Viewport.h>
+
+#include <private/filament/EngineEnums.h>
+
+#include <backend/DriverEnums.h>
+#include <backend/Handle.h>
+#include <backend/PipelineState.h>
+
+#include <math/vec2.h>
+#include <math/vec4.h>
+
+#include <utils/Slice.h>
 
 #include <tsl/robin_map.h>
 
 #include <array>
+#include <initializer_list>
 #include <random>
 #include <string_view>
 #include <variant>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
@@ -48,7 +63,6 @@ class FEngine;
 class FMaterial;
 class FMaterialInstance;
 class FrameGraph;
-class PerViewUniforms;
 class RenderPass;
 class RenderPassBuilder;
 struct CameraInfo;
@@ -56,16 +70,19 @@ struct CameraInfo;
 class PostProcessManager {
 public:
 
-    struct ConstantInfo {
-        std::string_view name;
-        std::variant<int32_t, float, bool> value;
-    };
 
-    struct MaterialInfo {
+    // This is intended to be used only to hold the static material data
+    struct StaticMaterialInfo {
+        struct ConstantInfo {
+            std::string_view name;
+            std::variant<int32_t, float, bool> value;
+        };
         std::string_view name;
         uint8_t const* data;
-        int size;
-        utils::FixedCapacityVector<ConstantInfo> constants = {};
+        size_t size;
+        // the life-time of objects pointed to by this initializer_list<> is extended to the
+        // life-time of the initializer_list
+        std::initializer_list<ConstantInfo> constants;
     };
 
     struct ColorGradingConfig {
@@ -88,7 +105,6 @@ public:
     void init() noexcept;
     void terminate(backend::DriverApi& driver) noexcept;
 
-
     void configureTemporalAntiAliasingMaterial(
             TemporalAntiAliasingOptions const& taaOptions) noexcept;
 
@@ -108,7 +124,6 @@ public:
             RenderPassBuilder const& passBuilder,
             FrameHistory const& frameHistory,
             CameraInfo const& cameraInfo,
-            PerViewUniforms& uniforms,
             FrameGraphId<FrameGraphTexture> structure,
             ScreenSpaceReflectionsOptions const& options,
             FrameGraphTexture::Descriptor const& desc) noexcept;
@@ -215,13 +230,12 @@ public:
             backend::TextureFormat outFormat, bool translucent) noexcept;
 
     // Temporal Anti-aliasing
-    void prepareTaa(FrameGraph& fg,
+    void TaaJitterCamera(
             filament::Viewport const& svp,
             TemporalAntiAliasingOptions const& taaOptions,
             FrameHistory& frameHistory,
             FrameHistoryEntry::TemporalAA FrameHistoryEntry::*pTaa,
-            CameraInfo* inoutCameraInfo,
-            PerViewUniforms& uniforms) const noexcept;
+            CameraInfo* inoutCameraInfo) const noexcept;
 
     FrameGraphId<FrameGraphTexture> taa(FrameGraph& fg,
             FrameGraphId<FrameGraphTexture> input,
@@ -276,7 +290,7 @@ public:
     // VSM shadow mipmap pass
     FrameGraphId<FrameGraphTexture> vsmMipmapPass(FrameGraph& fg,
             FrameGraphId<FrameGraphTexture> input, uint8_t layer, size_t level,
-            math::float4 clearColor, bool finalize) noexcept;
+            math::float4 clearColor) noexcept;
 
     FrameGraphId<FrameGraphTexture> gaussianBlurPass(FrameGraph& fg,
             FrameGraphId<FrameGraphTexture> input,
@@ -308,8 +322,7 @@ public:
 
     class PostProcessMaterial {
     public:
-        PostProcessMaterial() noexcept;
-        PostProcessMaterial(MaterialInfo const& info) noexcept;
+        explicit PostProcessMaterial(StaticMaterialInfo const& info) noexcept;
 
         PostProcessMaterial(PostProcessMaterial const& rhs) = delete;
         PostProcessMaterial& operator=(PostProcessMaterial const& rhs) = delete;
@@ -317,15 +330,21 @@ public:
         PostProcessMaterial(PostProcessMaterial&& rhs) noexcept;
         PostProcessMaterial& operator=(PostProcessMaterial&& rhs) noexcept;
 
-        ~PostProcessMaterial();
+        ~PostProcessMaterial() noexcept;
 
         void terminate(FEngine& engine) noexcept;
 
-        FMaterial* getMaterial(FEngine& engine) const noexcept;
-        FMaterialInstance* getMaterialInstance(FEngine& engine) const noexcept;
+        FMaterial* getMaterial(FEngine& engine,
+                PostProcessVariant variant = PostProcessVariant::OPAQUE) const noexcept;
 
-        std::pair<backend::PipelineState, backend::Viewport> getPipelineState(FEngine& engine,
-                Variant::type_t variantKey = 0u) const noexcept;
+        // Helper to get a MaterialInstance from a FMaterial
+        // This currently just call FMaterial::getDefaultInstance().
+        static FMaterialInstance* getMaterialInstance(FMaterial const* ma) noexcept;
+
+        // Helper to get a MaterialInstance from a PostProcessMaterial.
+        static FMaterialInstance* getMaterialInstance(FEngine& engine,
+                PostProcessMaterial const& material,
+                PostProcessVariant variant = PostProcessVariant::OPAQUE) noexcept;
 
     private:
         void loadMaterial(FEngine& engine) const noexcept;
@@ -334,35 +353,50 @@ public:
             mutable FMaterial* mMaterial;
             uint8_t const* mData;
         };
-        uint32_t mSize{};
-        mutable bool mHasMaterial{};
-        utils::FixedCapacityVector<ConstantInfo> mConstants{};
+        // mSize == 0 if mMaterial is valid, otherwise mSize > 0
+        mutable uint32_t mSize{};
+        // the objects' must outlive the Slice<>
+        utils::Slice<StaticMaterialInfo::ConstantInfo> mConstants{};
     };
 
-    void registerPostProcessMaterial(std::string_view name, MaterialInfo const& info);
+    void registerPostProcessMaterial(std::string_view name, StaticMaterialInfo const& info);
 
     PostProcessMaterial& getPostProcessMaterial(std::string_view name) noexcept;
 
-    void commitAndRender(FrameGraphResources::RenderPassInfo const& out,
-            PostProcessMaterial const& material, uint8_t variant,
+    void setFrameUniforms(backend::DriverApi& driver,
+            TypedUniformBuffer<PerViewUib>& uniforms) noexcept;
+
+    void bindPostProcessDescriptorSet(backend::DriverApi& driver) const noexcept;
+
+    backend::PipelineState getPipelineState(
+            FMaterial const* ma,
+            PostProcessVariant variant = PostProcessVariant::OPAQUE) const noexcept;
+
+    void renderFullScreenQuad(FrameGraphResources::RenderPassInfo const& out,
+            backend::PipelineState const& pipeline,
             backend::DriverApi& driver) const noexcept;
 
-    void commitAndRender(FrameGraphResources::RenderPassInfo const& out,
-            PostProcessMaterial const& material,
+    void renderFullScreenQuadWithScissor(FrameGraphResources::RenderPassInfo const& out,
+            backend::PipelineState const& pipeline,
+            backend::Viewport scissor,
             backend::DriverApi& driver) const noexcept;
 
-    void render(FrameGraphResources::RenderPassInfo const& out,
-            backend::PipelineState const& pipeline, backend::Viewport const& scissor,
-            backend::DriverApi& driver) const noexcept;
-
-    void render(FrameGraphResources::RenderPassInfo const& out,
-            std::pair<backend::PipelineState, backend::Viewport> const& combo,
-            backend::DriverApi& driver) const noexcept {
-        render(out, combo.first, combo.second, driver);
-    }
+    // Helper for a common case. Don't use in a loop because retrieving the PipelineState
+    // from FMaterialInstance is not trivial.
+    void commitAndRenderFullScreenQuad(backend::DriverApi& driver,
+            FrameGraphResources::RenderPassInfo const& out,
+            FMaterialInstance const* mi,
+            PostProcessVariant variant = PostProcessVariant::OPAQUE) const noexcept;
 
 private:
+    backend::RenderPrimitiveHandle mFullScreenQuadRph;
+    backend::VertexBufferInfoHandle mFullScreenQuadVbih;
+    backend::DescriptorSetLayoutHandle mPerRenderableDslh;
+
     FEngine& mEngine;
+
+    mutable SsrPassDescriptorSet mSsrPassDescriptorSet;
+    mutable PostProcessDescriptorSet mPostProcessDescriptorSet;
 
     struct BilateralPassConfig {
         uint8_t kernelSize = 11;

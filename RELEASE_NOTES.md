@@ -7,6 +7,15 @@ A new header is inserted each time a *tag* is created.
 Instead, if you are authoring a PR for the main branch, add your release note to
 [NEW_RELEASE_NOTES.md](./NEW_RELEASE_NOTES.md).
 
+## v1.55.1
+
+
+## v1.55.0
+- Add descriptor sets to describe shader resources. [⚠️ **New Material Version**]
+
+## v1.54.5
+
+
 ## v1.54.4
 
 - Add support for multi-layered render target with array textures.
@@ -645,7 +654,7 @@ Instead, if you are authoring a PR for the main branch, add your release note to
 
 - engine: Binary size improvements.
 - engine: Add basic support for instanced renderables [**NEW API**].
-- engine: Fix, first imaged passsed to `Stream::SetAcquiredImage` is ignored and leaked.
+- engine: Fix, first imaged passed to `Stream::SetAcquiredImage` is ignored and leaked.
 - Vulkan: Robustness improvements.
 - Java: Fix, lookAt z axis negated.
 - gltfio: Be graceful when model has > 4 weights per vert.

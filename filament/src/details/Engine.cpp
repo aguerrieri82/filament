@@ -38,6 +38,8 @@
 
 #include <filament/MaterialEnums.h>
 
+#include <private/filament/DescriptorSets.h>
+
 #include <private/backend/PlatformFactory.h>
 
 #include <backend/DriverEnums.h>
@@ -101,12 +103,12 @@ Engine* FEngine::create(Engine::Builder const& builder) {
         }
         DriverConfig const driverConfig{
                 .handleArenaSize = instance->getRequestedDriverHandleArenaSize(),
-                .textureUseAfterFreePoolSize = instance->getConfig().textureUseAfterFreePoolSize,
                 .metalUploadBufferSizeBytes = instance->getConfig().metalUploadBufferSizeBytes,
                 .disableParallelShaderCompile = instance->getConfig().disableParallelShaderCompile,
                 .disableHandleUseAfterFreeCheck = instance->getConfig().disableHandleUseAfterFreeCheck,
                 .forceGLES2Context = instance->getConfig().forceGLES2Context,
-                .stereoscopicType =  instance->getConfig().stereoscopicType,
+                .stereoscopicType = instance->getConfig().stereoscopicType,
+                .assertNativeWindowIsValid = instance->getConfig().assertNativeWindowIsValid,
         };
         instance->mDriver = platform->createDriver(sharedContext, driverConfig);
 
@@ -341,6 +343,22 @@ void FEngine::init() {
     driverApi.update3DImage(mDummyZeroTexture, 0, 0, 0, 0, 1, 1, 1,
             { zeroes, 4, Texture::Format::RGBA, Texture::Type::UBYTE });
 
+
+    mPerViewDescriptorSetLayoutSsrVariant = {
+            mHwDescriptorSetLayoutFactory,
+            driverApi,
+            descriptor_sets::getSsrVariantLayout() };
+
+    mPerViewDescriptorSetLayoutDepthVariant = {
+            mHwDescriptorSetLayoutFactory,
+            driverApi,
+            descriptor_sets::getDepthVariantLayout() };
+
+    mPerRenderableDescriptorSetLayout = {
+            mHwDescriptorSetLayoutFactory,
+            driverApi,
+            descriptor_sets::getPerRenderableLayout() };
+
 #ifdef FILAMENT_ENABLE_FEATURE_LEVEL_0
     if (UTILS_UNLIKELY(mActiveFeatureLevel == FeatureLevel::FEATURE_LEVEL_0)) {
         FMaterial::DefaultMaterialBuilder defaultMaterialBuilder;
@@ -468,7 +486,12 @@ void FEngine::shutdown() {
     mLightManager.terminate();              // free-up all lights
     mCameraManager.terminate(*this);        // free-up all cameras
 
+    mPerViewDescriptorSetLayoutDepthVariant.terminate(mHwDescriptorSetLayoutFactory, driver);
+    mPerViewDescriptorSetLayoutSsrVariant.terminate(mHwDescriptorSetLayoutFactory, driver);
+    mPerRenderableDescriptorSetLayout.terminate(mHwDescriptorSetLayoutFactory, driver);
+
     driver.destroyRenderPrimitive(mFullScreenTriangleRph);
+
     destroy(mFullScreenTriangleIb);
     destroy(mFullScreenTriangleVb);
     destroy(mDummyMorphTargetBuffer);
@@ -566,12 +589,10 @@ void FEngine::prepare() {
         });
     }
 
-    // Commit default material instances.
-    mMaterials.forEach([&driver](FMaterial* material) {
+    mMaterials.forEach([](FMaterial* material) {
 #if FILAMENT_ENABLE_MATDBG
         material->checkProgramEdits();
 #endif
-        material->getDefaultInstance()->commit(driver);
     });
 }
 
@@ -680,12 +701,12 @@ int FEngine::loop() {
 
     DriverConfig const driverConfig {
             .handleArenaSize = getRequestedDriverHandleArenaSize(),
-            .textureUseAfterFreePoolSize = mConfig.textureUseAfterFreePoolSize,
             .metalUploadBufferSizeBytes = mConfig.metalUploadBufferSizeBytes,
             .disableParallelShaderCompile = mConfig.disableParallelShaderCompile,
             .disableHandleUseAfterFreeCheck = mConfig.disableHandleUseAfterFreeCheck,
             .forceGLES2Context = mConfig.forceGLES2Context,
             .stereoscopicType =  mConfig.stereoscopicType,
+            .assertNativeWindowIsValid = mConfig.assertNativeWindowIsValid,
     };
     mDriver = mPlatform->createDriver(mSharedGLContext, driverConfig);
 
@@ -807,6 +828,16 @@ FRenderer* FEngine::createRenderer() noexcept {
 FMaterialInstance* FEngine::createMaterialInstance(const FMaterial* material,
         const FMaterialInstance* other, const char* name) noexcept {
     FMaterialInstance* p = mHeapAllocator.make<FMaterialInstance>(*this, other, name);
+    if (UTILS_UNLIKELY(p)) { // should never happen
+        auto pos = mMaterialInstances.emplace(material, "MaterialInstance");
+        pos.first->second.insert(p);
+    }
+    return p;
+}
+
+FMaterialInstance* FEngine::createMaterialInstance(const FMaterial* material,
+                                                   const char* name) noexcept {
+    FMaterialInstance* p = mHeapAllocator.make<FMaterialInstance>(*this, material, name);
     if (UTILS_UNLIKELY(p)) { // should never happen
         auto pos = mMaterialInstances.emplace(material, "MaterialInstance");
         pos.first->second.insert(p);
@@ -1068,29 +1099,32 @@ bool FEngine::destroy(const FInstanceBuffer* p){
 UTILS_NOINLINE
 bool FEngine::destroy(const FMaterial* ptr) {
     if (ptr == nullptr) return true;
-    auto pos = mMaterialInstances.find(ptr);
-    if (pos != mMaterialInstances.cend()) {
-        // ensure we've destroyed all instances before destroying the material
-        if (!ASSERT_PRECONDITION_NON_FATAL(pos->second.empty(),
-                "destroying material \"%s\" but %u instances still alive",
-                ptr->getName().c_str(), (*pos).second.size())) {
-            return false;
+    bool const success = terminateAndDestroy(ptr, mMaterials);
+    if (success) {
+        auto pos = mMaterialInstances.find(ptr);
+        if (pos != mMaterialInstances.cend()) {
+            // ensure we've destroyed all instances before destroying the material
+            if (!ASSERT_PRECONDITION_NON_FATAL(pos->second.empty(),
+                    "destroying material \"%s\" but %u instances still alive",
+                    ptr->getName().c_str(), (*pos).second.size())) {
+                return false;
+            }
         }
     }
-    return terminateAndDestroy(ptr, mMaterials);
+    return success;
 }
 
 UTILS_NOINLINE
 bool FEngine::destroy(const FMaterialInstance* ptr) {
     if (ptr == nullptr) return true;
+    if (ptr->isDefaultInstance()) return false;
     auto pos = mMaterialInstances.find(ptr->getMaterial());
     assert_invariant(pos != mMaterialInstances.cend());
     if (pos != mMaterialInstances.cend()) {
         return terminateAndDestroy(ptr, pos->second);
     }
-    // if we don't find this instance's material it might be because it's the default instance
-    // in which case it fine to ignore.
-    return true;
+    // this shouldn't happen, this would be double-free
+    return false;
 }
 
 UTILS_NOINLINE

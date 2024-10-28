@@ -43,7 +43,6 @@ struct VulkanCommandBuffer;
 struct VulkanAttachment {
     VulkanTexture* texture = nullptr;
     uint8_t level = 0;
-    uint8_t baseViewIndex = 0;
     uint8_t layerCount = 1;
     uint16_t layer = 0;
 
@@ -145,6 +144,10 @@ public:
         return mPhysicalDeviceFeatures.shaderClipDistance == VK_TRUE;
     }
 
+    inline bool isLazilyAllocatedMemorySupported() const noexcept {
+        return mLazilyAllocatedMemorySupported;
+    }
+
 private:
     VkPhysicalDeviceMemoryProperties mMemoryProperties = {};
     VkPhysicalDeviceProperties mPhysicalDeviceProperties = {};
@@ -152,6 +155,7 @@ private:
     bool mDebugMarkersSupported = false;
     bool mDebugUtilsSupported = false;
     bool mMultiviewEnabled = false;
+    bool mLazilyAllocatedMemorySupported = false;
 
     VkFormatList mDepthStencilFormats;
     VkFormatList mBlittableDepthStencilFormats;

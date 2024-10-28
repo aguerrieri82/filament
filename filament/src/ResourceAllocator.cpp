@@ -183,23 +183,23 @@ backend::TextureHandle ResourceAllocator::createTexture(const char* name,
             textureCache.erase(it);
         } else {
             // we don't, allocate a new texture and populate the in-use list
-            if (swizzle == defaultSwizzle) {
-                handle = mBackend.createTexture(
-                        target, levels, format, samples, width, height, depth, usage);
-            } else {
-                handle = mBackend.createTextureSwizzled(
-                        target, levels, format, samples, width, height, depth, usage,
-                        swizzle[0], swizzle[1], swizzle[2], swizzle[3]);
+            handle = mBackend.createTexture(
+                    target, levels, format, samples, width, height, depth, usage);
+            if (swizzle != defaultSwizzle) {
+                TextureHandle swizzledHandle = mBackend.createTextureViewSwizzle(
+                        handle, swizzle[0], swizzle[1], swizzle[2], swizzle[3]);
+                mBackend.destroyTexture(handle);
+                handle = swizzledHandle;
             }
         }
     } else {
-        if (swizzle == defaultSwizzle) {
-            handle = mBackend.createTexture(
-                    target, levels, format, samples, width, height, depth, usage);
-        } else {
-            handle = mBackend.createTextureSwizzled(
-                    target, levels, format, samples, width, height, depth, usage,
-                    swizzle[0], swizzle[1], swizzle[2], swizzle[3]);
+        handle = mBackend.createTexture(
+                target, levels, format, samples, width, height, depth, usage);
+        if (swizzle != defaultSwizzle) {
+            TextureHandle swizzledHandle = mBackend.createTextureViewSwizzle(
+                    handle, swizzle[0], swizzle[1], swizzle[2], swizzle[3]);
+            mBackend.destroyTexture(handle);
+            handle = swizzledHandle;
         }
     }
     mDisposer->checkout(handle, key);
@@ -260,7 +260,7 @@ void ResourceAllocator::gc(bool skippedFrame) noexcept {
         if ((ageDiff >= MAX_AGE_SKIPPED_FRAME && skippedFrame) ||
             (ageDiff >= mCacheMaxAge && evictedCount < MAX_EVICTION_COUNT)) {
             evictedCount++;
-            purge(it);
+            it = purge(it);
         } else {
             // build the set of ages present in the cache after eviction
             ages.set(std::min(size_t(31), ageDiff));
@@ -280,7 +280,7 @@ void ResourceAllocator::gc(bool skippedFrame) noexcept {
         for (auto it = textureCache.begin(); it != textureCache.end();) {
             const size_t ageDiff = age - it->second.age;
             if (ageDiff >= maxAge) {
-                purge(it);
+                it = purge(it);
             } else {
                 ++it;
             }
@@ -306,12 +306,13 @@ void ResourceAllocator::dump(bool brief) const noexcept {
     }
 }
 
-void ResourceAllocator::purge(
+ResourceAllocator::CacheContainer::iterator
+ResourceAllocator::purge(
         ResourceAllocator::CacheContainer::iterator const& pos) {
     //slog.d << "purging " << pos->second.handle.getId() << ", age=" << pos->second.age << io::endl;
     mBackend.destroyTexture(pos->second.handle);
     mCacheSize -= pos->second.size;
-    mTextureCache.erase(pos);
+    return mTextureCache.erase(pos);
 }
 
 // ------------------------------------------------------------------------------------------------
