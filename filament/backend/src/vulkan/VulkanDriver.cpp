@@ -575,10 +575,11 @@ void VulkanDriver::importTextureR(Handle<HwTexture> th, intptr_t id,
         TextureFormat format, uint8_t samples, uint32_t w, uint32_t h, uint32_t depth,
         TextureUsage usage) {
 
-
-
-    auto vktexture = mResourceAllocator.construct<VulkanTexture>(th, mPlatform->getDevice(),
-            mAllocator, &mCommands, (VkImage)id, backend::getVkFormat(format), samples, w, h, usage, mStagePool);
+    auto vktexture = mResourceAllocator.construct<VulkanTexture>(
+        th, mPlatform->getDevice(), mAllocator, &mCommands, 
+        &mResourceAllocator, 
+        (VkImage)id, backend::getVkFormat(format), samples, w, h, 
+        usage, mStagePool);
 
     mResourceManager.acquire(vktexture);
 
