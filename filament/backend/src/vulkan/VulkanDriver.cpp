@@ -575,14 +575,15 @@ void VulkanDriver::importTextureR(Handle<HwTexture> th, intptr_t id,
         TextureFormat format, uint8_t samples, uint32_t w, uint32_t h, uint32_t depth,
         TextureUsage usage) {
 
-    auto vktexture = mResourceAllocator.construct<VulkanTexture>(
-        th, mPlatform->getDevice(), mAllocator, &mCommands, 
-        &mResourceAllocator, 
-        (VkImage)id, backend::getVkFormat(format), samples, w, h, 
+
+    auto texture = resource_ptr<VulkanTexture>::make(
+        &mResourceManager, th,
+        mPlatform->getDevice(), mAllocator, 
+        &mResourceManager, &mCommands, (VkImage)id,
+        VK_NULL_HANDLE, backend::getVkFormat(format), samples, w, h,
         usage, mStagePool);
 
-    mResourceManager.acquire(vktexture);
-
+    texture.inc();
 }
 
 void VulkanDriver::destroyTexture(Handle<HwTexture> th) {
