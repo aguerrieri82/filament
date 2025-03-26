@@ -42,7 +42,6 @@ set(SRCS
         src/Platform.cpp
         src/PlatformFactory.cpp
         src/Program.cpp
-        src/SamplerGroup.cpp
 )
 
 set(PRIVATE_HDRS
@@ -55,7 +54,6 @@ set(PRIVATE_HDRS
         include/private/backend/DriverAPI.inc
         include/private/backend/HandleAllocator.h
         include/private/backend/PlatformFactory.h
-        include/private/backend/SamplerGroup.h
         src/CallbackManager.h
         src/CommandStreamDispatcher.h
         src/CompilerThreadPool.h
@@ -110,8 +108,12 @@ if (FILAMENT_SUPPORTS_OPENGL AND NOT FILAMENT_USE_EXTERNAL_GLES3)
         list(APPEND SRCS src/opengl/platforms/PlatformCocoaTouchGL.mm)
         list(APPEND SRCS src/opengl/platforms/CocoaTouchExternalImage.mm)
     elseif (APPLE)
-        list(APPEND SRCS src/opengl/platforms/PlatformCocoaGL.mm)
-        list(APPEND SRCS src/opengl/platforms/CocoaExternalImage.mm)
+        if (FILAMENT_SUPPORTS_OSMESA)
+            list(APPEND SRCS src/opengl/platforms/PlatformOSMesa.cpp)
+        else()
+            list(APPEND SRCS src/opengl/platforms/PlatformCocoaGL.mm)
+            list(APPEND SRCS src/opengl/platforms/CocoaExternalImage.mm)
+        endif()
     elseif (WEBGL)
         list(APPEND SRCS src/opengl/platforms/PlatformWebGL.cpp)
     elseif (LINUX)
@@ -141,11 +143,11 @@ if (FILAMENT_SUPPORTS_METAL)
             src/metal/MetalEnums.mm
             src/metal/MetalExternalImage.mm
             src/metal/MetalHandles.mm
-            src/metal/MetalPlatform.mm
             src/metal/MetalShaderCompiler.mm
             src/metal/MetalState.mm
             src/metal/MetalTimerQuery.mm
             src/metal/MetalUtils.mm
+            src/metal/PlatformMetal.mm
     )
 
     set(METAL_CPP_SRCS
@@ -175,10 +177,12 @@ endif()
 if (FILAMENT_SUPPORTS_VULKAN)
     list(APPEND SRCS
             include/backend/platforms/VulkanPlatform.h
-            src/vulkan/caching/VulkanDescriptorSetManager.cpp
-            src/vulkan/caching/VulkanDescriptorSetManager.h
-            src/vulkan/caching/VulkanPipelineLayoutCache.cpp
-            src/vulkan/caching/VulkanPipelineLayoutCache.h
+            src/vulkan/VulkanDescriptorSetCache.cpp
+            src/vulkan/VulkanDescriptorSetCache.h
+            src/vulkan/VulkanDescriptorSetLayoutCache.cpp
+            src/vulkan/VulkanDescriptorSetLayoutCache.h
+            src/vulkan/VulkanPipelineLayoutCache.cpp
+            src/vulkan/VulkanPipelineLayoutCache.h
             src/vulkan/memory/ResourceManager.cpp
             src/vulkan/memory/ResourceManager.h
             src/vulkan/memory/ResourcePointer.h
@@ -187,9 +191,15 @@ if (FILAMENT_SUPPORTS_VULKAN)
             src/vulkan/platform/VulkanPlatform.cpp
             src/vulkan/platform/VulkanPlatformSwapChainImpl.cpp
             src/vulkan/platform/VulkanPlatformSwapChainImpl.h
-            src/vulkan/spirv/VulkanSpirvUtils.cpp
-            src/vulkan/spirv/VulkanSpirvUtils.h
-            src/vulkan/VulkanAsyncHandles.cpp
+            src/vulkan/utils/Conversion.cpp
+            src/vulkan/utils/Conversion.h
+            src/vulkan/utils/Definitions.h
+            src/vulkan/utils/Helper.h
+            src/vulkan/utils/Image.h
+            src/vulkan/utils/Image.cpp
+            src/vulkan/utils/Spirv.h
+            src/vulkan/utils/Spirv.cpp
+            src/vulkan/utils/StaticVector.h
             src/vulkan/VulkanAsyncHandles.h
             src/vulkan/VulkanBlitter.cpp
             src/vulkan/VulkanBlitter.h
@@ -207,12 +217,12 @@ if (FILAMENT_SUPPORTS_VULKAN)
             src/vulkan/VulkanFboCache.h
             src/vulkan/VulkanHandles.cpp
             src/vulkan/VulkanHandles.h
-            src/vulkan/VulkanImageUtility.cpp
-            src/vulkan/VulkanImageUtility.h
             src/vulkan/VulkanMemory.h
             src/vulkan/VulkanMemory.cpp
             src/vulkan/VulkanPipelineCache.cpp
             src/vulkan/VulkanPipelineCache.h
+            src/vulkan/VulkanQueryManager.cpp
+            src/vulkan/VulkanQueryManager.h
             src/vulkan/VulkanSamplerCache.cpp
             src/vulkan/VulkanSamplerCache.h
             src/vulkan/VulkanStagePool.cpp
@@ -223,16 +233,50 @@ if (FILAMENT_SUPPORTS_VULKAN)
             src/vulkan/VulkanReadPixels.h
             src/vulkan/VulkanTexture.cpp
             src/vulkan/VulkanTexture.h
-            src/vulkan/VulkanUtility.cpp
-            src/vulkan/VulkanUtility.h
     )
     if (LINUX OR WIN32)
         list(APPEND SRCS src/vulkan/platform/VulkanPlatformLinuxWindows.cpp)
     elseif (APPLE OR IOS)
         list(APPEND SRCS src/vulkan/platform/VulkanPlatformApple.mm)
     elseif (ANDROID)
-        list(APPEND SRCS src/vulkan/platform/VulkanPlatformAndroid.cpp)
+        list(APPEND SRCS
+            include/backend/platforms/VulkanPlatformAndroid.h
+            src/vulkan/platform/VulkanPlatformAndroid.cpp
+        )
     endif()
+endif()
+
+if (FILAMENT_SUPPORTS_WEBGPU)
+    list(APPEND SRCS
+            include/backend/platforms/WebGPUPlatform.h
+            src/webgpu/platform/WebGPUPlatform.cpp
+            src/webgpu/WebGPUConstants.h
+            src/webgpu/WebGPUDriver.cpp
+            src/webgpu/WebGPUDriver.h
+    )
+    if (WIN32)
+        list(APPEND SRCS src/webgpu/platform/WebGPUPlatformWindows.cpp)
+    elseif (LINUX)
+        list(APPEND SRCS src/webgpu/platform/WebGPUPlatformLinux.cpp)
+    elseif (APPLE OR IOS)
+        list(APPEND SRCS src/webgpu/platform/WebGPUPlatformApple.mm)
+    elseif (ANDROID)
+        list(APPEND SRCS src/webgpu/platform/WebGPUPlatformAndroid.cpp)
+    endif()
+
+    if (TNT_DEV)
+        set(FILAMENT_WEBGPU_IMMEDIATE_ERROR_HANDLING_DEFAULT ON)
+    else()
+        set(FILAMENT_WEBGPU_IMMEDIATE_ERROR_HANDLING_DEFAULT OFF)
+    endif()
+
+    option(FILAMENT_WEBGPU_IMMEDIATE_ERROR_HANDLING
+            "Enable immediate_error_handling for the WebGPU backend Dawn implementation"
+            ${FILAMENT_WEBGPU_IMMEDIATE_ERROR_HANDLING_DEFAULT})
+endif()
+
+if (ANDROID)
+    list(APPEND SRCS src/BackendUtilsAndroid.cpp)
 endif()
 
 # ==================================================================================================
@@ -337,6 +381,10 @@ if (FILAMENT_SUPPORTS_VULKAN)
     target_link_libraries(${TARGET} PRIVATE SPIRV-Headers)
 endif()
 
+if (FILAMENT_SUPPORTS_WEBGPU)
+    target_link_libraries(${TARGET} PRIVATE webgpu_dawn dawncpp_headers)
+endif()
+
 if (FILAMENT_SUPPORTS_METAL)
     target_link_libraries(${TARGET} PUBLIC "-framework Metal -framework CoreVideo")
 endif()
@@ -374,9 +422,12 @@ set(LINUX_LINKER_OPTIMIZATION_FLAGS
         -Wl,--exclude-libs,bluegl
 )
 
-if (LINUX AND FILAMENT_SUPPORTS_OSMESA)
-    set(OSMESA_COMPILE_FLAGS
-        -I${FILAMENT_OSMESA_PATH}/include/GL)
+if (FILAMENT_SUPPORTS_OSMESA)
+    if (LINUX)
+        set(OSMESA_COMPILE_FLAGS -I${FILAMENT_OSMESA_PATH}/include/GL)
+    elseif (APPLE)
+        set(OSMESA_COMPILE_FLAGS -I${FILAMENT_OSMESA_PATH}/include)
+    endif()
 endif()
 
 if (MSVC)
@@ -387,7 +438,7 @@ else()
             -Wextra-semi -Wnewline-eof -Wdeprecated -Wundef
             -Wgnu-conditional-omitted-operand
             -Wweak-vtables -Wnon-virtual-dtor -Wclass-varargs -Wimplicit-fallthrough
-            -Wover-aligned
+            -Wover-aligned -Wreorder-init-list
             -Werror
     )
     if (CMAKE_CXX_STANDARD EQUAL 20)
@@ -411,6 +462,10 @@ if (FILAMENT_SUPPORTS_METAL)
     target_compile_definitions(${TARGET} PRIVATE $<$<BOOL:${FILAMENT_METAL_PROFILING}>:FILAMENT_METAL_PROFILING>)
 endif()
 
+if (FILAMENT_SUPPORTS_WEBGPU)
+    target_compile_definitions(${TARGET} PRIVATE $<$<BOOL:${FILAMENT_WEBGPU_IMMEDIATE_ERROR_HANDLING}>:FILAMENT_WEBGPU_IMMEDIATE_ERROR_HANDLING>)
+endif()
+
 target_link_libraries(${TARGET} PRIVATE
         ${OSMESA_LINKER_FLAGS}
         $<$<AND:$<PLATFORM_ID:Linux>,$<CONFIG:Release>>:${LINUX_LINKER_OPTIMIZATION_FLAGS}>
@@ -424,6 +479,10 @@ install(TARGETS ${TARGET} ${INSTALL_TYPE} DESTINATION lib/${DIST_DIR})
 install(TARGETS vkshaders ${INSTALL_TYPE} DESTINATION lib/${DIST_DIR})
 install(DIRECTORY ${PUBLIC_HDR_DIR}/backend DESTINATION include)
 
+if (FILAMENT_SUPPORTS_WEBGPU)
+    install(TARGETS webgpu_dawn ${INSTALL_TYPE} DESTINATION lib/${DIST_DIR})
+endif()
+
 # ==================================================================================================
 # Test
 # ==================================================================================================
@@ -435,6 +494,7 @@ if (APPLE OR LINUX)
         test/ShaderGenerator.cpp
         test/TrianglePrimitive.cpp
         test/Arguments.cpp
+        test/Lifetimes.cpp
         test/test_FeedbackLoops.cpp
         test/test_Blit.cpp
         test/test_MissingRequiredAttributes.cpp
@@ -459,7 +519,8 @@ if (APPLE OR LINUX)
         spirv-cross-glsl)
 endif()
 
-if (APPLE)
+# TODO: Disabling IOS test due to breakage wrt glslang update
+if (APPLE AND NOT IOS)
     # TODO: we should expand this test to Linux and other platforms.
     list(APPEND BACKEND_TEST_SRC
          test/test_RenderExternalImage.cpp)
@@ -467,7 +528,6 @@ if (APPLE)
     target_link_libraries(backend_test PRIVATE ${BACKEND_TEST_LIBS})
 
     set(BACKEND_TEST_DEPS
-            OGLCompiler
             OSDependent
             SPIRV
             SPIRV-Tools

@@ -66,6 +66,7 @@ static MaterialBuilder::Variable intToVariable(size_t i) noexcept {
         case 1:  return MaterialBuilder::Variable::CUSTOM1;
         case 2:  return MaterialBuilder::Variable::CUSTOM2;
         case 3:  return MaterialBuilder::Variable::CUSTOM3;
+        case 4:  return MaterialBuilder::Variable::CUSTOM4;
         default: return MaterialBuilder::Variable::CUSTOM0;
     }
 }
@@ -153,6 +154,12 @@ static bool processParameter(MaterialBuilder& builder, const JsonishObject& json
         std::cerr << "parameters: name value must be STRING." << std::endl;
         return false;
     }
+    
+    const JsonishValue* transformNameValue = jsonObject.getValue("transformName");
+    if (transformNameValue && transformNameValue->getType() != JsonishValue::STRING) {
+        std::cerr << "parameters: transformName value must be STRING." << std::endl;
+        return false;
+    }
 
     const JsonishValue* precisionValue = jsonObject.getValue("precision");
     if (precisionValue) {
@@ -221,7 +228,19 @@ static bool processParameter(MaterialBuilder& builder, const JsonishObject& json
 
         auto multisample = multiSampleValue ? multiSampleValue->toJsonBool()->getBool() : false;
 
-        builder.parameter(nameString.c_str(), type, format, precision, multisample);
+        if (transformNameValue) {
+            if (type != MaterialBuilder::SamplerType::SAMPLER_EXTERNAL) {
+                std::cerr << "parameters: the parameter with name '" << nameString << "'"
+                    << " is a sampler of type " << typeString << " and has a transformName."
+                    << " Transform names are only supported for external samplers."
+                    << std::endl;
+                return false;
+            }
+            auto transformName = transformNameValue->toJsonString()->getString();
+            builder.parameter(nameString.c_str(), type, format, precision, multisample, transformName.c_str());
+        } else {
+            builder.parameter(nameString.c_str(), type, format, precision, multisample);
+        }
 
     } else {
         std::cerr << "parameters: the type '" << typeString
@@ -609,8 +628,8 @@ static bool processVariables(MaterialBuilder& builder, const JsonishValue& value
     const JsonishArray* jsonArray = value.toJsonArray();
     const auto& elements = jsonArray->getElements();
 
-    if (elements.size() > 4) {
-        std::cerr << "variables: Max array size is 4." << std::endl;
+    if (elements.size() > MaterialBuilder::MATERIAL_VARIABLES_COUNT) {
+        std::cerr << "variables: Max array size is " << MaterialBuilder::MATERIAL_VARIABLES_COUNT << "." << std::endl;
         return false;
     }
 

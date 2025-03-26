@@ -7,6 +7,46 @@ A new header is inserted each time a *tag* is created.
 Instead, if you are authoring a PR for the main branch, add your release note to
 [NEW_RELEASE_NOTES.md](./NEW_RELEASE_NOTES.md).
 
+## v1.58.2
+
+- engine: Generate 1D instead of 3D LUTs for color grading whenever possible.
+
+## v1.58.1
+
+
+## v1.58.0
+
+- materials: add an optional `transformName` field to sampler material parameters. [⚠️ **New Material Version**]
+
+## v1.57.3
+
+- android: breaking changes to API KTX1Loader::createIndirectLight and KTX1Loader::createSkybox
+
+## v1.57.2
+
+- Support including PlatformMetal.h in C++ files.
+
+## v1.57.1
+
+
+## v1.57.0
+
+- matdbg: Add support for debugging ESSL 1.0 shaders
+- backend: New platform API to better handle external textures [⚠️ **New Material Version**]
+
+## v1.56.8
+
+
+## v1.56.7
+
+
+## v1.56.6
+
+fix crash: the 'target_node' of Animation Channel may be nullpointer.
+
+## v1.56.5
+
+
 ## v1.56.4
 
 

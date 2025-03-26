@@ -94,18 +94,22 @@ OpenGLContext::OpenGLContext(OpenGLPlatform& platform,
     }
     #endif
 
-    OpenGLContext::initExtensions(&ext, state.major, state.minor);
+    initExtensions(&ext, state.major, state.minor);
 
-    OpenGLContext::initProcs(&procs, ext, state.major, state.minor);
+    initProcs(&procs, ext, state.major, state.minor);
 
-    OpenGLContext::initBugs(&bugs, ext, state.major, state.minor,
+    initBugs(&bugs, ext, state.major, state.minor,
             state.vendor, state.renderer, state.version, state.shader);
 
     glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE,             &gets.max_renderbuffer_size);
     glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS,           &gets.max_texture_image_units);
     glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,  &gets.max_combined_texture_image_units);
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE,                  &gets.max_texture_size);
+    glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE,         &gets.max_cubemap_texture_size);
+    glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE,               &gets.max_3d_texture_size);
+    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS,          &gets.max_array_texture_layers);
 
-    mFeatureLevel = OpenGLContext::resolveFeatureLevel(state.major, state.minor, ext, gets, bugs);
+    mFeatureLevel = resolveFeatureLevel(state.major, state.minor, ext, gets, bugs);
 
 #ifdef BACKEND_OPENGL_VERSION_GLES
     mShaderModel = ShaderModel::MOBILE;
@@ -177,6 +181,14 @@ OpenGLContext::OpenGLContext(OpenGLPlatform& platform,
                     << gets.max_anisotropy << '\n'
             << "GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS = "
                     << gets.max_combined_texture_image_units << '\n'
+            << "GL_MAX_TEXTURE_SIZE = "
+                    << gets.max_texture_size << '\n'
+            << "GL_MAX_CUBE_MAP_TEXTURE_SIZE = "
+                    << gets.max_cubemap_texture_size << '\n'
+            << "GL_MAX_3D_TEXTURE_SIZE = "
+                    << gets.max_3d_texture_size << '\n'
+            << "GL_MAX_ARRAY_TEXTURE_LAYERS = "
+                    << gets.max_array_texture_layers << '\n'
             << "GL_MAX_DRAW_BUFFERS = "
                     << gets.max_draw_buffers << '\n'
             << "GL_MAX_RENDERBUFFER_SIZE = "
@@ -408,7 +420,7 @@ void OpenGLContext::initProcs(Procs* procs,
     procs->maxShaderCompilerThreadsKHR = +[](GLuint) {};
 
 #ifdef BACKEND_OPENGL_VERSION_GLES
-#   ifndef IOS // IOS is guaranteed to have ES3.x
+#   ifndef FILAMENT_IOS // FILAMENT_IOS is guaranteed to have ES3.x
 #       ifndef __EMSCRIPTEN__
     if (UTILS_UNLIKELY(major == 2)) {
         // Runtime OpenGL version is ES 2.x
@@ -438,7 +450,7 @@ void OpenGLContext::initProcs(Procs* procs,
         procs->maxShaderCompilerThreadsKHR = glMaxShaderCompilerThreadsKHR;
     }
 #       endif // __EMSCRIPTEN__
-#   endif // IOS
+#   endif // FILAMENT_IOS
 #else
     procs->maxShaderCompilerThreadsKHR = glMaxShaderCompilerThreadsARB;
 #endif
@@ -576,14 +588,14 @@ void OpenGLContext::initBugs(Bugs* bugs, Extensions const& exts,
     }
 
 #ifdef BACKEND_OPENGL_VERSION_GLES
-#   ifndef IOS // IOS is guaranteed to have ES3.x
+#   ifndef FILAMENT_IOS // FILAMENT_IOS is guaranteed to have ES3.x
     if (UTILS_UNLIKELY(major == 2)) {
         if (UTILS_UNLIKELY(!exts.OES_vertex_array_object)) {
             // we activate this workaround path, which does the reset of array buffer
             bugs->vao_doesnt_store_element_array_buffer_binding = true;
         }
     }
-#   endif // IOS
+#   endif // FILAMENT_IOS
 #else
     // feedback loops are allowed on GL desktop as long as writes are disabled
     bugs->allow_read_only_ancillary_feedback_loop = true;
@@ -622,7 +634,7 @@ FeatureLevel OpenGLContext::resolveFeatureLevel(GLint major, GLint minor,
             }
         }
     }
-#   ifndef IOS // IOS is guaranteed to have ES3.x
+#   ifndef FILAMENT_IOS // FILAMENT_IOS is guaranteed to have ES3.x
     else if (UTILS_UNLIKELY(major == 2)) {
         // Runtime OpenGL version is ES 2.x
         // note: mandatory extensions (all supported by Mali-400 and Adreno 304)
@@ -634,7 +646,7 @@ FeatureLevel OpenGLContext::resolveFeatureLevel(GLint major, GLint minor,
         //      OES_texture_npot
         featureLevel = FeatureLevel::FEATURE_LEVEL_0;
     }
-#   endif // IOS
+#   endif // FILAMENT_IOS
 #else
     assert_invariant(gets.max_texture_image_units >= 16);
     assert_invariant(gets.max_combined_texture_image_units >= 32);

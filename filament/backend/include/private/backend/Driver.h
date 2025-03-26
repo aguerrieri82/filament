@@ -24,6 +24,7 @@
 #include <backend/Handle.h>
 #include <backend/PipelineState.h>
 #include <backend/TargetBufferInfo.h>
+#include <backend/AcquiredImage.h>
 
 #include <utils/CString.h>
 #include <utils/compiler.h>
@@ -48,6 +49,7 @@
 namespace filament::backend {
 
 class BufferDescriptor;
+class BufferObjectStreamDescriptor;
 class CallbackHandler;
 class PixelBufferDescriptor;
 class Program;
@@ -68,6 +70,16 @@ public:
     virtual void purge() noexcept = 0;
 
     virtual ShaderModel getShaderModel() const noexcept = 0;
+
+    // The shader language used for shaders for this driver, used to inform matdbg.
+    //
+    // For OpenGL, this distinguishes whether the driver's shaders are powered by ESSL1 or ESSL3.
+    // This information is used by matdbg to display the correct shader code to the web UI and patch
+    // the correct chunk when rebuilding shaders live.
+    //
+    // Metal shaders can either be MSL or Metal libraries, but at time of writing, matdbg can only
+    // interface with MSL.
+    virtual ShaderLanguage getShaderLanguage() const noexcept = 0;
 
     // Returns the dispatcher. This is only called once during initialization of the CommandStream,
     // so it doesn't matter that it's virtual.

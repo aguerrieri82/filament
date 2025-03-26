@@ -179,6 +179,14 @@ void MaterialBuilderBase::prepare(bool vulkanSemantics,
                 effectiveFeatureLevel,
             });
         }
+        if (any(mTargetApi & TargetApi::WEBGPU)) {
+            mCodeGenPermutations.push_back({
+                shaderModel,
+                TargetApi::WEBGPU,
+                TargetLanguage::SPIRV,
+                effectiveFeatureLevel,
+            });
+        }
     }
 }
 
@@ -244,6 +252,7 @@ MaterialBuilder& MaterialBuilder::variable(Variable v, const char* name) noexcep
         case Variable::CUSTOM1:
         case Variable::CUSTOM2:
         case Variable::CUSTOM3:
+        case Variable::CUSTOM4:
             assert(size_t(v) < MATERIAL_VARIABLES_COUNT);
             mVariables[size_t(v)] = { CString(name), Precision::DEFAULT, false };
             break;
@@ -258,6 +267,7 @@ MaterialBuilder& MaterialBuilder::variable(Variable v,
         case Variable::CUSTOM1:
         case Variable::CUSTOM2:
         case Variable::CUSTOM3:
+        case Variable::CUSTOM4:
             assert(size_t(v) < MATERIAL_VARIABLES_COUNT);
             mVariables[size_t(v)] = { CString(name), precision, true };
             break;
@@ -279,7 +289,7 @@ MaterialBuilder& MaterialBuilder::parameter(const char* name, UniformType type,
 
 
 MaterialBuilder& MaterialBuilder::parameter(const char* name, SamplerType samplerType,
-        SamplerFormat format, ParameterPrecision precision, bool multisample) noexcept {
+        SamplerFormat format, ParameterPrecision precision, bool multisample, const char* transformName) noexcept {
     FILAMENT_CHECK_PRECONDITION(!multisample ||
             (format != SamplerFormat::SHADOW &&
                     (samplerType == SamplerType::SAMPLER_2D ||
@@ -288,7 +298,7 @@ MaterialBuilder& MaterialBuilder::parameter(const char* name, SamplerType sample
                " as long as type is not SHADOW";
 
     FILAMENT_CHECK_POSTCONDITION(mParameterCount < MAX_PARAMETERS_COUNT) << "Too many parameters";
-    mParameters[mParameterCount++] = { name, samplerType, format, precision, multisample };
+    mParameters[mParameterCount++] = { name, samplerType, format, precision, multisample, transformName };
     return *this;
 }
 
@@ -609,12 +619,18 @@ void MaterialBuilder::prepareToBuild(MaterialInfo& info) noexcept {
     SamplerInterfaceBlock::Builder sbb;
     BufferInterfaceBlock::Builder ibb;
     // sampler bindings start at 1, 0 is the ubo
-    for (size_t i = 0, binding = 1, c = mParameterCount; i < c; i++) {
+    uint16_t binding = 1;
+    for (size_t i = 0, c = mParameterCount; i < c; i++) {
         auto const& param = mParameters[i];
         assert_invariant(!param.isSubpass());
         if (param.isSampler()) {
             sbb.add({ param.name.data(), param.name.size() },
-                    binding++, param.samplerType, param.format, param.precision, param.multisample);
+                    binding, param.samplerType, param.format, param.precision, param.multisample);
+            if (!param.transformName.empty()) {
+                ibb.add({{{ param.transformName.data(), param.transformName.size() }, uint8_t(binding),
+                          0, UniformType::MAT3, Precision::DEFAULT, FeatureLevel::FEATURE_LEVEL_0 }});
+            }
+            binding++;
         } else if (param.isUniform()) {
             ibb.add({{{ param.name.data(), param.name.size() },
                       uint32_t(param.size == 1u ? 0u : param.size), param.uniformType,
@@ -828,6 +844,9 @@ static void showErrorMessage(const char* materialName, filament::Variant variant
         case TargetApi::METAL:
             targetApiString = "Metal.\n";
             break;
+        case TargetApi::WEBGPU:
+            targetApiString = "WebGPU.\n";
+            break;
         case TargetApi::ALL:
             assert(0); // Unreachable.
             break;
@@ -871,6 +890,7 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
     std::vector<TextEntry> essl1Entries;
     std::vector<BinaryEntry> spirvEntries;
     std::vector<TextEntry> metalEntries;
+    std::vector<TextEntry> wgslEntries;
     LineDictionary textDictionary;
     BlobDictionary spirvDictionary;
     // End: must be protected by lock
@@ -899,8 +919,9 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
 
         // Metal Shading Language is cross-compiled from Vulkan.
         const bool targetApiNeedsSpirv =
-                (targetApi == TargetApi::VULKAN || targetApi == TargetApi::METAL);
+                (targetApi == TargetApi::VULKAN || targetApi == TargetApi::METAL || targetApi == TargetApi::WEBGPU);
         const bool targetApiNeedsMsl = targetApi == TargetApi::METAL;
+        const bool targetApiNeedsWgsl = targetApi == TargetApi::WEBGPU;
         const bool targetApiNeedsGlsl = targetApi == TargetApi::OPENGL;
 
         // Set when a job fails
@@ -915,21 +936,26 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
                 // TODO: avoid allocations when not required
                 std::vector<uint32_t> spirv;
                 std::string msl;
+                std::string wgsl;
 
                 std::vector<uint32_t>* pSpirv = targetApiNeedsSpirv ? &spirv : nullptr;
                 std::string* pMsl = targetApiNeedsMsl ? &msl : nullptr;
+                std::string* pWgsl = targetApiNeedsWgsl ? &wgsl : nullptr;
 
                 TextEntry glslEntry{};
                 BinaryEntry spirvEntry{};
                 TextEntry metalEntry{};
+                TextEntry wgslEntry{};
 
                 glslEntry.shaderModel  = params.shaderModel;
                 spirvEntry.shaderModel = params.shaderModel;
                 metalEntry.shaderModel = params.shaderModel;
+                wgslEntry.shaderModel = params.shaderModel;
 
                 glslEntry.variant  = v.variant;
                 spirvEntry.variant = v.variant;
                 metalEntry.variant = v.variant;
+                wgslEntry.variant = v.variant;
 
                 // Generate raw shader code.
                 // The quotes in Google-style line directives cause problems with certain drivers. These
@@ -937,15 +963,15 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
                 // explicitly remove them when using filamat lite.
                 std::string shader;
                 if (v.stage == backend::ShaderStage::VERTEX) {
-                    shader = sg.createVertexProgram(
+                    shader = sg.createSurfaceVertexProgram(
                             shaderModel, targetApi, targetLanguage, featureLevel,
                             info, v.variant, mInterpolation, mVertexDomain);
                 } else if (v.stage == backend::ShaderStage::FRAGMENT) {
-                    shader = sg.createFragmentProgram(
+                    shader = sg.createSurfaceFragmentProgram(
                             shaderModel, targetApi, targetLanguage, featureLevel,
                             info, v.variant, mInterpolation, mVariantFilter);
                 } else if (v.stage == backend::ShaderStage::COMPUTE) {
-                    shader = sg.createComputeProgram(
+                    shader = sg.createSurfaceComputeProgram(
                             shaderModel, targetApi, targetLanguage, featureLevel,
                             info);
                 }
@@ -998,7 +1024,7 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
                     config.glsl.subpassInputToColorLocation.emplace_back(0, 0);
                 }
 
-                bool const ok = postProcessor.process(shader, config, pGlsl, pSpirv, pMsl);
+                bool const ok = postProcessor.process(shader, config, pGlsl, pSpirv, pMsl, pWgsl);
                 if (!ok) {
                     showErrorMessage(mMaterialName.c_str_safe(), v.variant, targetApi, v.stage,
                                      featureLevel, shader);
@@ -1025,6 +1051,13 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
 
 
                 switch (targetApi) {
+                    case TargetApi::WEBGPU:
+                        assert(!spirv.empty());
+                        assert(wgsl.length() > 0);
+                        wgslEntry.stage = v.stage;
+                        wgslEntry.shader = wgsl;
+                        wgslEntries.push_back(wgslEntry);
+                        break;
                     case TargetApi::ALL:
                         // should never happen
                         break;
@@ -1086,6 +1119,7 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
     std::sort(essl1Entries.begin(), essl1Entries.end(), compare);
     std::sort(spirvEntries.begin(), spirvEntries.end(), compare);
     std::sort(metalEntries.begin(), metalEntries.end(), compare);
+    std::sort(wgslEntries.begin(), wgslEntries.end(), compare);
 
     // Generate the dictionaries.
     for (const auto& s : glslEntries) {
@@ -1099,6 +1133,9 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
         s.dictionaryIndex = spirvDictionary.addBlob(spirv);
     }
     for (const auto& s : metalEntries) {
+        textDictionary.addText(s.shader);
+    }
+    for (const auto& s : wgslEntries) {
         textDictionary.addText(s.shader);
     }
 
@@ -1129,6 +1166,12 @@ bool MaterialBuilder::generateShaders(JobSystem& jobSystem, const std::vector<Va
     if (!metalEntries.empty()) {
         container.push<MaterialTextChunk>(std::move(metalEntries),
                 dictionaryChunk.getDictionary(), ChunkType::MaterialMetal);
+    }
+
+    // Emit WGSL chunk (MaterialTextChunk).
+    if (!wgslEntries.empty()) {
+        container.push<MaterialTextChunk>(std::move(wgslEntries),
+                dictionaryChunk.getDictionary(), ChunkType::MaterialWgsl);
     }
 
     return true;
@@ -1211,6 +1254,15 @@ error:
     if (mMaterialDomain == MaterialDomain::POST_PROCESS && mOutputs.empty()) {
         output(VariableQualifier::OUT,
                 OutputTarget::COLOR, Precision::DEFAULT, OutputType::FLOAT4, "color");
+    }
+
+    if (mMaterialDomain == MaterialDomain::SURFACE) {
+        if (mRequiredAttributes[VertexAttribute::COLOR] &&
+            !mVariables[int(Variable::CUSTOM4)].name.empty()) {
+            // both the color attribute and the custom4 variable are present, that's not supported
+            slog.e << "Error: when the 'color' attribute is required 'Variable::CUSTOM4' is not supported." << io::endl;
+            goto error;
+        }
     }
 
     // TODO: maybe check MaterialDomain::COMPUTE has outputs
@@ -1368,7 +1420,6 @@ bool MaterialBuilder::checkMaterialLevelFeatures(MaterialInfo const& info) const
                 textureUsedByFilamentCount -= 1;        // fog texture
             }
 
-            // TODO: we need constants somewhere for these values
             if (userSamplerCount > maxTextureCount - textureUsedByFilamentCount) {
                 slog.e << "Error: material \"" << mMaterialName.c_str()
                        << "\" has feature level " << +info.featureLevel
@@ -1439,15 +1490,15 @@ std::string MaterialBuilder::peek(backend::ShaderStage stage,
 
     switch (stage) {
         case backend::ShaderStage::VERTEX:
-            return sg.createVertexProgram(
+            return sg.createSurfaceVertexProgram(
                     params.shaderModel, params.targetApi, params.targetLanguage,
                     params.featureLevel, info, {}, mInterpolation, mVertexDomain);
         case backend::ShaderStage::FRAGMENT:
-            return sg.createFragmentProgram(
+            return sg.createSurfaceFragmentProgram(
                     params.shaderModel, params.targetApi, params.targetLanguage,
                     params.featureLevel, info, {}, mInterpolation, mVariantFilter);
         case backend::ShaderStage::COMPUTE:
-            return sg.createComputeProgram(
+            return sg.createSurfaceComputeProgram(
                     params.shaderModel, params.targetApi, params.targetLanguage,
                     params.featureLevel, info);
     }

@@ -29,8 +29,10 @@
 
 #include <tsl/robin_map.h>
 
+#include <atomic>
 #include <cstddef>
 #include <exception>
+#include <mutex>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -38,19 +40,37 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HandleAllocatorGL  HandleAllocator<32,  96, 136>    // ~4520 / pool / MiB
+#define HandleAllocatorGL  HandleAllocator<32,  96, 184>    // ~4520 / pool / MiB
 #define HandleAllocatorVK  HandleAllocator<64, 160, 312>    // ~1820 / pool / MiB
 #define HandleAllocatorMTL HandleAllocator<32,  64, 552>    // ~1660 / pool / MiB
 
 namespace filament::backend {
 
+// This is used to not duplicate the code for the Tags management
+class DebugTag {
+public:
+    DebugTag();
+    void writePoolHandleTag(HandleBase::HandleId key, utils::CString&& tag) noexcept;
+    void writeHeapHandleTag(HandleBase::HandleId key, utils::CString&& tag) noexcept;
+    utils::CString findHandleTag(HandleBase::HandleId key) const noexcept;
+
+private:
+    // This is used to associate a tag to a handle. mDebugTags is only written the in the main
+    // driver thread, but it can be accessed from any thread, because it's called from handle_cast<>
+    // which is used by synchronous calls.
+    mutable utils::Mutex mDebugTagLock;
+    tsl::robin_map<HandleBase::HandleId, utils::CString> mDebugTags;
+};
+
 /*
  * A utility class to efficiently allocate and manage Handle<>
  */
 template<size_t P0, size_t P1, size_t P2>
-class HandleAllocator {
+class HandleAllocator : public DebugTag {
 public:
-    HandleAllocator(const char* name, size_t size, bool disableUseAfterFreeCheck) noexcept;
+    HandleAllocator(const char* name, size_t size) noexcept;
+    HandleAllocator(const char* name, size_t size,
+            bool disableUseAfterFreeCheck, bool disableHeapHandleTags) noexcept;
     HandleAllocator(HandleAllocator const& rhs) = delete;
     HandleAllocator& operator=(HandleAllocator const& rhs) = delete;
     ~HandleAllocator();
@@ -97,7 +117,7 @@ public:
      *  ConcreteTexture* p = reconstruct(h, w, h);
      */
     template<typename D, typename B, typename ... ARGS>
-    typename std::enable_if_t<std::is_base_of_v<B, D>, D>*
+    std::enable_if_t<std::is_base_of_v<B, D>, D>*
     destroyAndConstruct(Handle<B> const& handle, ARGS&& ... args) {
         assert_invariant(handle);
         D* addr = handle_cast<D*>(const_cast<Handle<B>&>(handle));
@@ -116,7 +136,7 @@ public:
      *  ConcreteTexture* p = construct(h, w, h);
      */
     template<typename D, typename B, typename ... ARGS>
-    typename std::enable_if_t<std::is_base_of_v<B, D>, D>*
+    std::enable_if_t<std::is_base_of_v<B, D>, D>*
     construct(Handle<B> const& handle, ARGS&& ... args) noexcept {
         assert_invariant(handle);
         D* addr = handle_cast<D*>(const_cast<Handle<B>&>(handle));
@@ -133,7 +153,7 @@ public:
      *      deallocate(h, p);
      */
     template <typename B, typename D,
-            typename = typename std::enable_if_t<std::is_base_of_v<B, D>, D>>
+            typename = std::enable_if_t<std::is_base_of_v<B, D>, D>>
     void deallocate(Handle<B>& handle, D const* p) noexcept {
         // allow to destroy the nullptr, similarly to operator delete
         if (p) {
@@ -161,9 +181,9 @@ public:
      *      ConcreteTexture* p = handle_cast<ConcreteTexture*>(h);
      */
     template<typename Dp, typename B>
-    inline typename std::enable_if_t<
+    inline std::enable_if_t<
             std::is_pointer_v<Dp> &&
-            std::is_base_of_v<B, typename std::remove_pointer_t<Dp>>, Dp>
+            std::is_base_of_v<B, std::remove_pointer_t<Dp>>, Dp>
     handle_cast(Handle<B>& handle) {
         assert_invariant(handle);
         auto [p, tag] = handleToPointer(handle.getId());
@@ -200,6 +220,8 @@ public:
         return static_cast<Dp>(p);
     }
 
+    utils::CString getHandleTag(HandleBase::HandleId key) const noexcept;
+
     template<typename B>
     bool is_valid(Handle<B>& handle) {
         if (!handle) {
@@ -217,9 +239,9 @@ public:
     }
 
     template<typename Dp, typename B>
-    inline typename std::enable_if_t<
+    inline std::enable_if_t<
             std::is_pointer_v<Dp> &&
-            std::is_base_of_v<B, typename std::remove_pointer_t<Dp>>, Dp>
+            std::is_base_of_v<B, std::remove_pointer_t<Dp>>, Dp>
     handle_cast(Handle<B> const& handle) {
         return handle_cast<Dp>(const_cast<Handle<B>&>(handle));
     }
@@ -227,24 +249,16 @@ public:
     void associateTagToHandle(HandleBase::HandleId id, utils::CString&& tag) noexcept {
         // TODO: for now, only pool handles check for use-after-free, so we only keep tags for
         // those
-        if (isPoolHandle(id)) {
+        uint32_t key = id;
+        if (UTILS_LIKELY(isPoolHandle(id))) {
             // Truncate the age to get the debug tag
-            uint32_t const key = id & ~(HANDLE_DEBUG_TAG_MASK ^ HANDLE_AGE_MASK);
-            // This line is the costly part. In the future, we could potentially use a custom
-            // allocator.
-            mDebugTags[key] = std::move(tag);
+            key &= ~(HANDLE_DEBUG_TAG_MASK ^ HANDLE_AGE_MASK);
+            writePoolHandleTag(key, std::move(tag));
+        } else {
+            if (!mHeapHandleTagsDisabled) {
+                writeHeapHandleTag(key, std::move(tag));
+            }
         }
-    }
-
-    utils::CString getHandleTag(HandleBase::HandleId id) const noexcept {
-        if (!isPoolHandle(id)) {
-            return "(no tag)";
-        }
-        uint32_t const key = id & ~(HANDLE_DEBUG_TAG_MASK ^ HANDLE_AGE_MASK);
-        if (auto pos = mDebugTags.find(key); pos != mDebugTags.end()) {
-            return pos->second;
-        }
-        return "(no tag)";
     }
 
 private:
@@ -347,9 +361,8 @@ private:
         if (UTILS_LIKELY(p)) {
             uint32_t const tag = (uint32_t(age) << HANDLE_AGE_SHIFT) & HANDLE_AGE_MASK;
             return arenaPointerToHandle(p, tag);
-        } else {
-            return allocateHandleSlow(SIZE);
         }
+        return allocateHandleSlow(SIZE);
     }
 
     template<size_t SIZE>
@@ -391,7 +404,7 @@ private:
     void deallocateHandleSlow(HandleBase::HandleId id, size_t size) noexcept;
 
     // We inline this because it's just 4 instructions in the fast case
-    inline std::pair<void*, uint32_t> handleToPointer(HandleBase::HandleId id) const noexcept {
+   std::pair<void*, uint32_t> handleToPointer(HandleBase::HandleId id) const noexcept {
         // note: the null handle will end-up returning nullptr b/c it'll be handled as
         // a non-pool handle.
         if (UTILS_LIKELY(isPoolHandle(id))) {
@@ -406,7 +419,7 @@ private:
     void* handleToPointerSlow(HandleBase::HandleId id) const noexcept;
 
     // We inline this because it's just 3 instructions
-    inline HandleBase::HandleId arenaPointerToHandle(void* p, uint32_t tag) const noexcept {
+   HandleBase::HandleId arenaPointerToHandle(void* p, uint32_t tag) const noexcept {
         char* const base = (char*)mHandleArena.getArea().begin();
         size_t const offset = (char*)p - base;
         assert_invariant((offset % Allocator::getAlignment()) == 0);
@@ -421,9 +434,11 @@ private:
     // Below is only used when running out of space in the HandleArena
     mutable utils::Mutex mLock;
     tsl::robin_map<HandleBase::HandleId, void*> mOverflowMap;
-    tsl::robin_map<HandleBase::HandleId, utils::CString> mDebugTags;
-    HandleBase::HandleId mId = 0;
-    bool mUseAfterFreeCheckDisabled = false;
+    std::atomic<HandleBase::HandleId> mId = 0;
+
+    // constants
+    const bool mUseAfterFreeCheckDisabled;
+    const bool mHeapHandleTagsDisabled;
 };
 
 } // namespace filament::backend

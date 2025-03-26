@@ -77,17 +77,48 @@ jobs:
         run: |
           cd build/web && printf "y" | ./build.sh presubmit
 
-  test-renderdiff:
-    name: test-renderdiff
-    runs-on: ubuntu-22.04-32core
-
+  validate-docs:
+    name: validate-docs
+    runs-on: ubuntu-22.04-4core
     steps:
       - uses: actions/checkout@v4.1.6
-      - uses: ./.github/actions/ubuntu-apt-add-src
+        with:
+          fetch-depth: 0
+      - name: Check for manual edits to /docs
+        run: |
+           echo "${{ github.event.pull_request.head.sha }} -- ${{ github.event.pull_request.head.sha }}"
+           # disable for now
+           # bash docs_src/build/presubmit_check.sh ${{ github.event.pull_request.head.sha }}
+
+  test-renderdiff:
+    name: test-renderdiff
+    runs-on: macos-14-xlarge
+    steps:
+      - uses: actions/checkout@v4.1.6
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install python prereqs
+        run: pip install mako setuptools pyyaml
       - name: Run script
         run: |
-          source ./build/linux/ci-common.sh && bash test/renderdiff_tests.sh
+          bash test/renderdiff/test.sh
       - uses: actions/upload-artifact@v4
         with:
           name: presubmit-renderdiff-result
           path: ./out/renderdiff_tests
+
+  validate-wgsl-webgpu:
+    name: validate-wgsl-webgpu
+    runs-on: ubuntu-22.04-8core
+
+    steps:
+      - uses: actions/checkout@v4.1.6
+      - name: Run build script
+        run: source ./build/linux/ci-common.sh && ./build.sh -W debug test_filamat filament
+      - name: Run test
+        run: ./out/cmake-debug/libs/filamat/test_filamat --gtest_filter=MaterialCompiler.Wgsl*

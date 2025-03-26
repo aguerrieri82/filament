@@ -14,8 +14,15 @@
  * limitations under the License.
  */
 
+#include <backend/DriverEnums.h>
+#include <backend/Handle.h>
+
 #include "noop/NoopDriver.h"
 #include "CommandStreamDispatcher.h"
+
+#include <backend/Handle.h>
+
+#include <stdint.h>
 
 namespace filament::backend {
 
@@ -32,11 +39,15 @@ Dispatcher NoopDriver::getDispatcher() const noexcept {
 }
 
 ShaderModel NoopDriver::getShaderModel() const noexcept {
-#if defined(__ANDROID__) || defined(IOS) || defined(__EMSCRIPTEN__)
+#if defined(__ANDROID__) || defined(FILAMENT_IOS) || defined(__EMSCRIPTEN__)
     return ShaderModel::MOBILE;
 #else
     return ShaderModel::DESKTOP;
 #endif
+}
+
+ShaderLanguage NoopDriver::getShaderLanguage() const noexcept {
+    return ShaderLanguage::ESSL3;
 }
 
 // explicit instantiation of the Dispatcher
@@ -122,7 +133,7 @@ Handle<HwStream> NoopDriver::createStreamAcquired() {
     return {};
 }
 
-void NoopDriver::setAcquiredImage(Handle<HwStream> sh, void* image,
+void NoopDriver::setAcquiredImage(Handle<HwStream> sh, void* image, const math::mat3f& transform,
         CallbackHandler* handler, StreamCallback cb, void* userData) {
 }
 
@@ -229,6 +240,14 @@ size_t NoopDriver::getMaxUniformBufferSize() {
     return 16384u;
 }
 
+size_t NoopDriver::getMaxTextureSize(SamplerType target) {
+    return 4096u;
+}
+
+size_t NoopDriver::getMaxArrayTextureLayers() {
+    return 256u;
+}
+
 void NoopDriver::updateIndexBuffer(Handle<HwIndexBuffer> ibh, BufferDescriptor&& p,
         uint32_t byteOffset) {
     scheduleDestroy(std::move(p));
@@ -238,6 +257,8 @@ void NoopDriver::updateBufferObject(Handle<HwBufferObject> ibh, BufferDescriptor
         uint32_t byteOffset) {
     scheduleDestroy(std::move(p));
 }
+
+void NoopDriver::registerBufferObjectStreams(Handle<HwBufferObject> boh, BufferObjectStreamDescriptor&& streams) { }
 
 void NoopDriver::updateBufferObjectUnsynchronized(Handle<HwBufferObject> ibh, BufferDescriptor&& p,
         uint32_t byteOffset) {
@@ -258,17 +279,14 @@ void NoopDriver::update3DImage(Handle<HwTexture> th,
     scheduleDestroy(std::move(data));
 }
 
+void NoopDriver::setupExternalImage2(Platform::ExternalImageHandleRef image) {
+}
+
 void NoopDriver::setupExternalImage(void* image) {
 }
 
 TimerQueryResult NoopDriver::getTimerQueryValue(Handle<HwTimerQuery> tqh, uint64_t* elapsedTime) {
     return TimerQueryResult::ERROR;
-}
-
-void NoopDriver::setExternalImage(Handle<HwTexture> th, void* image) {
-}
-
-void NoopDriver::setExternalImagePlane(Handle<HwTexture> th, void* image, uint32_t plane) {
 }
 
 void NoopDriver::setExternalStream(Handle<HwTexture> th, Handle<HwStream> sh) {

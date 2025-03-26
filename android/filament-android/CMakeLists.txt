@@ -2,8 +2,10 @@ cmake_minimum_required(VERSION 3.19)
 project(filament-android)
 
 option(FILAMENT_SUPPORTS_VULKAN "Enables Vulkan on Android" OFF)
+option(FILAMENT_ENABLE_FGVIEWER "Enables Frame Graph Viewer" OFF)
 option(FILAMENT_ENABLE_MATDBG "Enables Material debugger" OFF)
 option(FILAMENT_DISABLE_MATOPT "Disables material optimizations" OFF)
+option(FILAMENT_SUPPORTS_WEBGPU "Enables WebGPU on Android" OFF)
 
 set(FILAMENT_DIR ${FILAMENT_DIST_DIR})
 
@@ -27,10 +29,6 @@ add_library(filaflat STATIC IMPORTED)
 set_target_properties(filaflat PROPERTIES IMPORTED_LOCATION
         ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libfilaflat.a)
 
-add_library(filamat STATIC IMPORTED)
-set_target_properties(filamat PROPERTIES IMPORTED_LOCATION
-        ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libfilamat.a)
-
 add_library(geometry STATIC IMPORTED)
 set_target_properties(geometry PROPERTIES IMPORTED_LOCATION
         ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libgeometry.a)
@@ -47,9 +45,21 @@ add_library(vkshaders STATIC IMPORTED)
 set_target_properties(vkshaders PROPERTIES IMPORTED_LOCATION
         ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libvkshaders.a)
 
+if (FILAMENT_SUPPORTS_WEBGPU)
+        add_library(webgpu_dawn STATIC IMPORTED)
+        set_target_properties(webgpu_dawn PROPERTIES IMPORTED_LOCATION
+                ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libwebgpu_dawn.a)
+endif()
+
 add_library(smol-v STATIC IMPORTED)
 set_target_properties(smol-v PROPERTIES IMPORTED_LOCATION
         ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libsmol-v.a)
+
+if (FILAMENT_ENABLE_FGVIEWER)
+    add_library(fgviewer STATIC IMPORTED)
+    set_target_properties(fgviewer PROPERTIES IMPORTED_LOCATION
+            ${FILAMENT_DIR}/lib/${ANDROID_ABI}/libfgviewer.a)
+endif()
 
 if (FILAMENT_ENABLE_MATDBG)
     add_library(matdbg STATIC IMPORTED)
@@ -117,10 +127,12 @@ target_link_libraries(filament-jni
     # libgeometry is PUBLIC because gltfio uses it.
     PUBLIC geometry
 
+    $<$<STREQUAL:${FILAMENT_ENABLE_FGVIEWER},ON>:fgviewer>
     $<$<STREQUAL:${FILAMENT_ENABLE_MATDBG},ON>:matdbg>
     $<$<STREQUAL:${FILAMENT_ENABLE_MATDBG},ON>:filamat>
     $<$<STREQUAL:${FILAMENT_SUPPORTS_VULKAN},ON>:bluevk>
     $<$<STREQUAL:${FILAMENT_SUPPORTS_VULKAN},ON>:vkshaders>
+    $<$<STREQUAL:${FILAMENT_SUPPORTS_WEBGPU},ON>:webgpu_dawn>
     $<$<STREQUAL:${FILAMENT_SUPPORTS_VULKAN},ON>:smol-v>
 )
 

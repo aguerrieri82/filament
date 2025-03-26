@@ -18,6 +18,7 @@
 #define TNT_FILAMENT_BACKEND_PLATFORMS_VULKANPLATFORM_H
 
 #include <backend/Platform.h>
+#include <backend/DriverEnums.h>
 
 #include <bluevk/BlueVK.h>
 
@@ -71,6 +72,9 @@ public:
         // where the gpu only has one graphics queue. Then the client needs to ensure that no
         // concurrent access can occur.
         uint32_t graphicsQueueIndex = 0xFFFFFFFF;
+        bool debugUtilsSupported = false;
+        bool debugMarkersSupported = false;
+        bool multiviewSupported = false;
     };
 
     /**
@@ -88,6 +92,7 @@ public:
         VkFormat colorFormat = VK_FORMAT_UNDEFINED;
         VkFormat depthFormat = VK_FORMAT_UNDEFINED;
         VkExtent2D extent = {0, 0};
+        uint32_t layerCount = 1;
         bool isProtected = false;
     };
 
@@ -304,9 +309,19 @@ public:
         uint32_t height;
 
         /**
+         * The layerCount of the external image
+         */
+        uint32_t layerCount;
+
+        /**
          * The layer count of the external image
          */
         uint32_t layers;
+
+        /**
+         * The numbers of samples per texel
+         */
+        VkSampleCountFlagBits samples;
 
         /**
          * The format of the external image
@@ -338,22 +353,48 @@ public:
          */
         uint32_t memoryTypeBits;
     };
-    virtual ExternalImageMetadata getExternalImageMetadata(void* externalImage);
+    virtual ExternalImageMetadata getExternalImageMetadata(ExternalImageHandleRef externalImage);
 
     using ImageData = std::pair<VkImage, VkDeviceMemory>;
-    virtual ImageData createExternalImage(void* externalImage,
-            const ExternalImageMetadata& metadata);
+    virtual ImageData createExternalImageData(ExternalImageHandleRef externalImage,
+            const ExternalImageMetadata& metadata, uint32_t memoryTypeIndex,
+            VkImageUsageFlags usage);
+
+    virtual VkSampler createExternalSampler(SamplerYcbcrConversion chroma,
+            SamplerParams sampler,
+            uint32_t internalFormat);
+
+    virtual VkImageView createExternalImageView(SamplerYcbcrConversion chroma,
+            uint32_t internalFormat, VkImage image, VkImageSubresourceRange range,
+            VkImageViewType viewType, VkComponentMapping swizzle);
+
+protected:
+    virtual ExtensionSet getSwapchainInstanceExtensions() const;
+
+    using SurfaceBundle = std::tuple<VkSurfaceKHR, VkExtent2D>;
+    virtual SurfaceBundle createVkSurfaceKHR(void* nativeWindow, VkInstance instance,
+            uint64_t flags) const noexcept;
 
 private:
-    static ExtensionSet getSwapchainInstanceExtensions();
-    static ExternalImageMetadata getExternalImageMetadataImpl(void* externalImage,
+    // Platform dependent helper methods
+    static ExtensionSet getSwapchainInstanceExtensionsImpl();
+
+    static ExternalImageMetadata getExternalImageMetadataImpl(ExternalImageHandleRef externalImage,
             VkDevice device);
-    static ImageData createExternalImageImpl(void* externalImage, VkDevice device,
-            const VkAllocationCallbacks* allocator, const ExternalImageMetadata& metadata);
+
+    static ImageData createExternalImageDataImpl(ExternalImageHandleRef externalImage,
+            VkDevice device, const ExternalImageMetadata& metadata, uint32_t memoryTypeIndex,
+            VkImageUsageFlags usage);
+    static VkSampler createExternalSamplerImpl(VkDevice device,
+            SamplerYcbcrConversion chroma, SamplerParams sampler,
+            uint32_t internalFormat);
+    static VkImageView createExternalImageViewImpl(VkDevice device,
+            SamplerYcbcrConversion chroma, uint32_t internalFormat, VkImage image,
+            VkImageSubresourceRange range, VkImageViewType viewType,
+            VkComponentMapping swizzle);
 
     // Platform dependent helper methods
-    using SurfaceBundle = std::tuple<VkSurfaceKHR, VkExtent2D>;
-    static SurfaceBundle createVkSurfaceKHR(void* nativeWindow, VkInstance instance,
+    static SurfaceBundle createVkSurfaceKHRImpl(void* nativeWindow, VkInstance instance,
             uint64_t flags) noexcept;
 
     friend struct VulkanPlatformPrivate;
