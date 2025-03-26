@@ -611,13 +611,11 @@ void VulkanDriver::importTextureR(Handle<HwTexture> th, intptr_t id,
         TextureFormat format, uint8_t samples, uint32_t w, uint32_t h, uint32_t depth,
         TextureUsage usage) {
 
-
     auto texture = resource_ptr<VulkanTexture>::make(
         &mResourceManager, th,
         mPlatform->getDevice(), mAllocator, 
         &mResourceManager, &mCommands, (VkImage)id,
-        VK_NULL_HANDLE, backend::getVkFormat(format), samples, w, h,
-        usage, mStagePool);
+        VK_NULL_HANDLE, fvkutils::getVkFormat(format), samples, w, h, depth, usage, mStagePool);
 
     texture.inc();
 }
