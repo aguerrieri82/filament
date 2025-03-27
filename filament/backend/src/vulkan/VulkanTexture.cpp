@@ -244,10 +244,12 @@ VulkanTexture::VulkanTexture(VkDevice device, VkPhysicalDevice physicalDevice,
         imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     }
 
+
+
     // Determine if we can use the transient usage flag combined with lazily allocated memory.
-    const bool useTransientAttachment =
+    bool useTransientAttachment =
             // Lazily allocated memory is available.
-            context.isLazilyAllocatedMemorySupported() &&
+            context.isLazilyAllocatedMemorySupported()  &&
             // Usage consists of attachment flags only.
             none(tusage & ~TextureUsage::ALL_ATTACHMENTS) &&
             // Usage contains at least one attachment flag.
@@ -258,6 +260,9 @@ VulkanTexture::VulkanTexture(VkDevice device, VkPhysicalDevice physicalDevice,
             // Note that the custom shader does not resolve stencil. We do need to move to vk 1.2
             // and above to be able to support stencil resolve (along with depth).
             !(any(usage & TextureUsage::DEPTH_ATTACHMENT) && samples > 1);
+
+    //#ANDREA: disable Transient for attached VR images 
+    useTransientAttachment = false;
 
     mState->mIsTransientAttachment = useTransientAttachment;
 
@@ -350,7 +355,8 @@ VulkanTexture::VulkanTexture(VkDevice device, VkPhysicalDevice physicalDevice,
             = context.selectMemoryType(memReqs.memoryTypeBits, requiredMemoryFlags);
 
     FILAMENT_CHECK_POSTCONDITION(memoryTypeIndex < VK_MAX_MEMORY_TYPES)
-            << "VulkanTexture: unable to find a memory type that meets requirements.";
+            << "VulkanTexture: unable to find a memory type that meets requirements. " 
+            << "R:" << memReqs.memoryTypeBits << " RQ:" << requiredMemoryFlags;
 
     VkMemoryAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
