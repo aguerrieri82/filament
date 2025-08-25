@@ -18,17 +18,21 @@
 #define TNT_FILAMENT_BACKEND_VULKANDRIVER_H
 
 #include "VulkanBlitter.h"
+#include "VulkanBufferCache.h"
 #include "VulkanConstants.h"
 #include "VulkanContext.h"
 #include "VulkanFboCache.h"
 #include "VulkanHandles.h"
+#include "VulkanMemory.h"
 #include "VulkanPipelineCache.h"
+#include "VulkanQueryManager.h"
 #include "VulkanReadPixels.h"
 #include "VulkanSamplerCache.h"
 #include "VulkanStagePool.h"
-#include "VulkanQueryManager.h"
+#include "VulkanYcbcrConversionCache.h"
 #include "vulkan/VulkanDescriptorSetCache.h"
 #include "vulkan/VulkanDescriptorSetLayoutCache.h"
+#include "vulkan/VulkanExternalImageManager.h"
 #include "vulkan/VulkanPipelineLayoutCache.h"
 #include "vulkan/memory/ResourceManager.h"
 #include "vulkan/memory/ResourcePointer.h"
@@ -52,8 +56,8 @@ constexpr uint8_t MAX_RENDERTARGET_ATTACHMENT_TEXTURES =
 
 class VulkanDriver final : public DriverBase {
 public:
-    static Driver* create(VulkanPlatform* platform, VulkanContext const& context,
-            Platform::DriverConfig const& driverConfig) noexcept;
+    static Driver* create(VulkanPlatform* platform, VulkanContext& context,
+            Platform::DriverConfig const& driverConfig);
 
 #if FVK_ENABLED(FVK_DEBUG_DEBUG_UTILS)
     // Encapsulates the VK_EXT_debug_utils extension.  In particular, we use
@@ -65,7 +69,7 @@ public:
     private:
         static DebugUtils* get();
 
-        DebugUtils(VkInstance instance, VkDevice device, VulkanContext const* context);
+        DebugUtils(VkInstance instance, VkDevice device, VulkanContext const& context);
         ~DebugUtils();
 
         VkInstance const mInstance;
@@ -88,8 +92,8 @@ private:
     void debugCommandBegin(CommandStream* cmds, bool synchronous,
             const char* methodName) noexcept override;
 
-    inline VulkanDriver(VulkanPlatform* platform, VulkanContext const& context,
-            Platform::DriverConfig const& driverConfig) noexcept;
+    VulkanDriver(VulkanPlatform* platform, VulkanContext& context,
+            Platform::DriverConfig const& driverConfig);
 
     ~VulkanDriver() noexcept override;
 
@@ -118,6 +122,11 @@ private:
 
 private:
     void collectGarbage();
+    void bindPipelineImpl(PipelineState const& pipelineState, VkPipelineLayout pipelineLayout,
+            fvkutils::DescriptorSetMask descriptorSetMask);
+
+    // Flush the current command buffer and reset the pipeline state.
+    void endCommandRecording();
 
     VulkanPlatform* mPlatform = nullptr;
     fvkmemory::ResourceManager mResourceManager;
@@ -128,34 +137,54 @@ private:
     VmaAllocator mAllocator = VK_NULL_HANDLE;
     VkDebugReportCallbackEXT mDebugCallback = VK_NULL_HANDLE;
 
-    VulkanContext mContext = {};
+    VulkanContext& mContext;
 
     VulkanCommands mCommands;
     VulkanPipelineLayoutCache mPipelineLayoutCache;
     VulkanPipelineCache mPipelineCache;
     VulkanStagePool mStagePool;
+    VulkanBufferCache mBufferCache;
     VulkanFboCache mFramebufferCache;
+    VulkanYcbcrConversionCache mYcbcrConversionCache;
     VulkanSamplerCache mSamplerCache;
     VulkanBlitter mBlitter;
     VulkanReadPixels mReadPixels;
     VulkanDescriptorSetLayoutCache mDescriptorSetLayoutCache;
     VulkanDescriptorSetCache mDescriptorSetCache;
     VulkanQueryManager mQueryManager;
+    VulkanExternalImageManager mExternalImageManager;
 
     // This is necessary for us to write to push constants after binding a pipeline.
-    struct {
-        resource_ptr<VulkanProgram> program;
-        VkPipelineLayout pipelineLayout;
-        fvkutils::DescriptorSetMask descriptorSetMask;
-    } mBoundPipeline = {};
+    using DescriptorSetLayoutHandleList = std::array<resource_ptr<VulkanDescriptorSetLayout>,
+            VulkanDescriptorSetLayout::UNIQUE_DESCRIPTOR_SET_COUNT>;
 
-    // We need to store information about a render pass to enable better barriers at the end of a
-    // renderpass.
+    struct BindInDrawBundle {
+        PipelineState pipelineState = {};
+        DescriptorSetLayoutHandleList dsLayoutHandles = {};
+        fvkutils::DescriptorSetMask descriptorSetMask = {};
+        resource_ptr<VulkanProgram> program = {};
+    };
+
     struct {
-        using AttachmentArray =
-                fvkutils::StaticVector<VulkanAttachment, MAX_RENDERTARGET_ATTACHMENT_TEXTURES>;
-        AttachmentArray attachments;
-    } mRenderPassFboInfo = {};
+        // For push constant
+        resource_ptr<VulkanProgram> program = {};
+        // For push commiting dynamic ubos in draw()
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        fvkutils::DescriptorSetMask descriptorSetMask = {};
+
+        std::pair<bool, BindInDrawBundle> bindInDraw = {false, {}};
+    } mPipelineState = {};
+
+    struct {
+        // This tracks whether the app has seen external samplers bound to a the descriptor set.
+        // This will force bindPipeline to take a slow path.
+        bool hasExternalSamplerLayouts = false;
+        bool hasBoundExternalImages = false;
+
+        bool hasExternalSamplers() const noexcept {
+            return hasExternalSamplerLayouts && hasBoundExternalImages;
+        }
+    } mAppState;
 
     bool const mIsSRGBSwapChainSupported;
     backend::StereoscopicType const mStereoscopicType;

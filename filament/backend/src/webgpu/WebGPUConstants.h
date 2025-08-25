@@ -17,9 +17,12 @@
 #ifndef TNT_FILAMENT_BACKEND_WEBGPUCONSTANTS_H
 #define TNT_FILAMENT_BACKEND_WEBGPUCONSTANTS_H
 
-#include <utils/Log.h>
+#include <utils/Logger.h>
 
 #include <cstdint>
+
+// WebGPU requires that the source buffer of a writeBuffer call has a size that is a multiple of 4.
+constexpr size_t FILAMENT_WEBGPU_BUFFER_SIZE_MODULUS = 4;
 
 // FWGPU is short for Filament WebGPU
 
@@ -30,9 +33,21 @@
 #define FWGPU_PRINT_SYSTEM         0x00000002
 
 // Set this to enable logging "only" to one output stream. This is useful in the case where we want
-// to debug with print statements and want ordered logging (e.g slog.i and slog.e will not appear in
-// order of calls).
+// to debug with print statements and want ordered logging (e.g LOG(INFO) and LOG(ERROR) will not
+// appear in order of calls).
 #define FWGPU_DEBUG_FORCE_LOG_TO_I 0x00000004
+
+// Set this to enable logging related to the WebGPU backend's update3DImage function, which would
+// otherwise spam the logs.
+#define FWGPU_DEBUG_UPDATE_IMAGE 0x00000008
+
+// Set this to enable logging related to the WebGPU backend's WebGPUBlitter functionality,
+// which would otherwise spam the logs.
+#define FWGPU_DEBUG_BLIT 0x00000010
+
+// Set this to enable logging relating to bind groups (bind group layouts, bind groups themselves,
+// textures, samplers, and buffers,...), which would otherwise spam the logs.
+#define FWGPU_DEBUG_BIND_GROUPS 0x00000020
 
 // Useful default combinations
 #define FWGPU_DEBUG_EVERYTHING     0xFFFFFFFF
@@ -52,15 +67,36 @@
 #define FWGPU_ENABLED(flags) (((FWGPU_DEBUG_FLAGS) & (flags)) == (flags))
 
 #if FWGPU_ENABLED(FWGPU_DEBUG_FORCE_LOG_TO_I)
-    #define FWGPU_LOGI (utils::slog.i)
+    #define FWGPU_LOGI LOG(INFO)
     #define FWGPU_LOGD FWGPU_LOGI
     #define FWGPU_LOGE FWGPU_LOGI
     #define FWGPU_LOGW FWGPU_LOGI
 #else
-    #define FWGPU_LOGE (utils::slog.e)
-    #define FWGPU_LOGW (utils::slog.w)
-    #define FWGPU_LOGD (utils::slog.d)
-    #define FWGPU_LOGI (utils::slog.i)
+    #define FWGPU_LOGE LOG(ERROR)
+    #define FWGPU_LOGW LOG(WARNING)
+    #define FWGPU_LOGD DLOG(INFO)
+    #define FWGPU_LOGI LOG(INFO)
 #endif
+
+constexpr uint64_t FILAMENT_WEBGPU_REQUEST_ADAPTER_TIMEOUT_NANOSECONDS =
+        /* milliseconds */ 1000u * /* converted to ns */ 1000000u;
+
+constexpr uint64_t FILAMENT_WEBGPU_REQUEST_DEVICE_TIMEOUT_NANOSECONDS =
+        /* milliseconds */ 1000u * /* converted to ns */ 1000000u;
+
+constexpr uint64_t FILAMENT_WEBGPU_SHADER_COMPILATION_TIMEOUT_NANOSECONDS =
+        /* milliseconds */ 1000u * /* converted to ns */ 1000000u;
+
+// if a render pipeline is not used in this number of consecutive frames,
+// then expire/release it from the cache.
+// A smaller number means more frequent pipeline creation events, taking more time.
+// A larger number means more pipelines stored, taking more memory.
+constexpr uint64_t FILAMENT_WEBGPU_RENDER_PIPELINE_EXPIRATION_IN_FRAME_COUNT = 45;
+
+// if a pipeline layout is not used in this number of consecutive frames,
+// then expire/release it from the cache.
+// A smaller number means more frequent pipeline layout creation events, taking more time.
+// A larger number means more layouts stored, taking more memory.
+constexpr uint64_t FILAMENT_WEBGPU_PIPELINE_LAYOUT_EXPIRATION_IN_FRAME_COUNT = 90;
 
 #endif// TNT_FILAMENT_BACKEND_WEBGPUCONSTANTS_H

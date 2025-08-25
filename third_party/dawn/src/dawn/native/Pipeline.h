@@ -46,6 +46,9 @@
 
 namespace dawn::native {
 
+class ComputePipelineBase;
+class RenderPipelineBase;
+
 ResultOrError<ShaderModuleEntryPoint> ValidateProgrammableStage(DeviceBase* device,
                                                                 const ShaderModuleBase* module,
                                                                 StringView entryPointName,
@@ -70,6 +73,12 @@ class PipelineBase : public ApiObjectBase, public CachedObject {
   public:
     ~PipelineBase() override;
 
+    virtual const ComputePipelineBase* AsComputePipeline() const { return nullptr; }
+    virtual ComputePipelineBase* AsComputePipeline() { return nullptr; }
+
+    virtual const RenderPipelineBase* AsRenderPipeline() const { return nullptr; }
+    virtual RenderPipelineBase* AsRenderPipeline() { return nullptr; }
+
     PipelineLayoutBase* GetLayout();
     const PipelineLayoutBase* GetLayout() const;
     const RequiredBufferSizes& GetMinBufferSizes() const;
@@ -77,7 +86,7 @@ class PipelineBase : public ApiObjectBase, public CachedObject {
     const PerStage<ProgrammableStage>& GetAllStages() const;
     bool HasStage(SingleShaderStage stage) const;
     wgpu::ShaderStage GetStageMask() const;
-    const ImmediateConstantMask& GetPipelineMask() const;
+    const ImmediateConstantMask& GetImmediateMask() const;
 
     ResultOrError<Ref<BindGroupLayoutBase>> GetBindGroupLayout(uint32_t groupIndex);
 
@@ -94,7 +103,9 @@ class PipelineBase : public ApiObjectBase, public CachedObject {
     // Initialize() should only be called once by the frontend.
     MaybeError Initialize(std::optional<ScopedUseShaderPrograms> scopedUsePrograms = std::nullopt);
 
-    void SetPipelineMaskForTesting(ImmediateConstantMask immediateConstantMask);
+    uint32_t GetImmediateConstantSize() const;
+
+    void SetImmediateMaskForTesting(ImmediateConstantMask immediateConstantMask);
 
   protected:
     PipelineBase(DeviceBase* device,
@@ -103,7 +114,7 @@ class PipelineBase : public ApiObjectBase, public CachedObject {
                  std::vector<StageAndDescriptor> stages);
     PipelineBase(DeviceBase* device, ObjectBase::ErrorTag tag, StringView label);
 
-    ImmediateConstantMask mPipelineMask = ImmediateConstantMask(0);
+    ImmediateConstantMask mImmediateMask = ImmediateConstantMask(0);
 
   private:
     MaybeError ValidateGetBindGroupLayout(BindGroupIndex group);

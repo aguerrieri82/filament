@@ -1890,12 +1890,10 @@ TEST_F(IR_BuiltinPolyfillTest, InsertBits_Full_U32) {
     %17:u32 = shl %arg_1, %16
     %18:bool = lt %arg_2, 32u
     %19:u32 = select 0u, %17, %18
-    %20:u32 = construct %15
-    %21:u32 = and %19, %20
-    %22:u32 = complement %15
-    %23:u32 = construct %22
-    %24:u32 = and %arg, %23
-    %result:u32 = or %21, %24
+    %20:u32 = and %19, %15
+    %21:u32 = complement %15
+    %22:u32 = and %arg, %21
+    %result:u32 = or %20, %22
     ret %result
   }
 }
@@ -1936,10 +1934,10 @@ TEST_F(IR_BuiltinPolyfillTest, InsertBits_Full_I32) {
     %17:i32 = shl %arg_1, %16
     %18:bool = lt %arg_2, 32u
     %19:i32 = select 0i, %17, %18
-    %20:i32 = construct %15
+    %20:i32 = convert %15
     %21:i32 = and %19, %20
     %22:u32 = complement %15
-    %23:i32 = construct %22
+    %23:i32 = convert %22
     %24:i32 = and %arg, %23
     %result:i32 = or %21, %24
     ret %result
@@ -2030,12 +2028,14 @@ TEST_F(IR_BuiltinPolyfillTest, InsertBits_Full_Vec4I32) {
     %17:vec4<i32> = shl %arg_1, %16
     %18:bool = lt %arg_2, 32u
     %19:vec4<i32> = select vec4<i32>(0i), %17, %18
-    %20:vec4<i32> = construct %15
-    %21:vec4<i32> = and %19, %20
-    %22:u32 = complement %15
-    %23:vec4<i32> = construct %22
-    %24:vec4<i32> = and %arg, %23
-    %result:vec4<i32> = or %21, %24
+    %20:i32 = convert %15
+    %21:vec4<i32> = construct %20
+    %22:vec4<i32> = and %19, %21
+    %23:u32 = complement %15
+    %24:i32 = convert %23
+    %25:vec4<i32> = construct %24
+    %26:vec4<i32> = and %arg, %25
+    %result:vec4<i32> = or %22, %26
     ret %result
   }
 }
@@ -2050,8 +2050,7 @@ TEST_F(IR_BuiltinPolyfillTest, InsertBits_Full_Vec4I32) {
 }
 
 TEST_F(IR_BuiltinPolyfillTest, TextureSampleBaseClampToEdge_2d_f32_NoPolyfill) {
-    auto* texture_ty =
-        ty.Get<core::type::SampledTexture>(core::type::TextureDimension::k2d, ty.f32());
+    auto* texture_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
     Build(core::BuiltinFn::kTextureSampleBaseClampToEdge, ty.vec4<f32>(),
           Vector{texture_ty, ty.sampler(), ty.vec2<f32>()});
     auto* src = R"(
@@ -2200,8 +2199,7 @@ TEST_F(IR_BuiltinPolyfillTest, Radians_Vec4F16) {
 }
 
 TEST_F(IR_BuiltinPolyfillTest, TextureSampleBaseClampToEdge_2d_f32) {
-    auto* texture_ty =
-        ty.Get<core::type::SampledTexture>(core::type::TextureDimension::k2d, ty.f32());
+    auto* texture_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
     Build(core::BuiltinFn::kTextureSampleBaseClampToEdge, ty.vec4<f32>(),
           Vector{texture_ty, ty.sampler(), ty.vec2<f32>()});
     auto* src = R"(
@@ -2235,8 +2233,7 @@ TEST_F(IR_BuiltinPolyfillTest, TextureSampleBaseClampToEdge_2d_f32) {
 }
 
 TEST_F(IR_BuiltinPolyfillTest, TextureSampleBiasClampNonArray) {
-    auto* texture_ty =
-        ty.Get<core::type::SampledTexture>(core::type::TextureDimension::k2d, ty.f32());
+    auto* texture_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
     Build(core::BuiltinFn::kTextureSampleBias, ty.vec4<f32>(),
           Vector{texture_ty, ty.sampler(), ty.vec2<f32>(), ty.f32()});
 
@@ -2267,8 +2264,7 @@ TEST_F(IR_BuiltinPolyfillTest, TextureSampleBiasClampNonArray) {
 }
 
 TEST_F(IR_BuiltinPolyfillTest, TextureSampleBiasClampWithArray) {
-    auto* texture_ty =
-        ty.Get<core::type::SampledTexture>(core::type::TextureDimension::k2dArray, ty.f32());
+    auto* texture_ty = ty.sampled_texture(core::type::TextureDimension::k2dArray, ty.f32());
     Build(core::BuiltinFn::kTextureSampleBias, ty.vec4<f32>(),
           Vector{texture_ty, ty.sampler(), ty.vec2<f32>(), ty.i32(), ty.f32()});
 
@@ -2884,6 +2880,54 @@ TEST_F(IR_BuiltinPolyfillTest, Unpack4x8unorm) {
 
     BuiltinPolyfillConfig config;
     config.pack_unpack_4x8_norm = true;
+    Run(BuiltinPolyfill, config);
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_BuiltinPolyfillTest, Absi32_NoPolyfill) {
+    Build(core::BuiltinFn::kAbs, ty.i32(), Vector{ty.i32()});
+    auto* src = R"(
+%foo = func(%arg:i32):i32 {
+  $B1: {
+    %result:i32 = abs %arg
+    ret %result
+  }
+}
+)";
+    auto* expect = src;
+
+    EXPECT_EQ(src, str());
+
+    BuiltinPolyfillConfig config;
+    config.abs_signed_int = false;
+    Run(BuiltinPolyfill, config);
+    EXPECT_EQ(expect, str());
+}
+
+TEST_F(IR_BuiltinPolyfillTest, Absi32_Enabled) {
+    Build(core::BuiltinFn::kAbs, ty.i32(), Vector{ty.i32()});
+    auto* src = R"(
+%foo = func(%arg:i32):i32 {
+  $B1: {
+    %result:i32 = abs %arg
+    ret %result
+  }
+}
+)";
+    auto* expect = R"(
+%foo = func(%arg:i32):i32 {
+  $B1: {
+    %3:i32 = negation %arg
+    %result:i32 = max %arg, %3
+    ret %result
+  }
+}
+)";
+
+    EXPECT_EQ(src, str());
+
+    BuiltinPolyfillConfig config;
+    config.abs_signed_int = true;
     Run(BuiltinPolyfill, config);
     EXPECT_EQ(expect, str());
 }

@@ -93,7 +93,7 @@ public:
     using DescriptorBindingsContainer = backend::Program::DescriptorSetInfo;
     bool getDescriptorBindings(DescriptorBindingsContainer* container) const noexcept;
 
-    using DescriptorSetLayoutContainer = std::array<backend::DescriptorSetLayout, 2>;
+    using DescriptorSetLayoutContainer = backend::DescriptorSetLayout;
     bool getDescriptorSetLayout(DescriptorSetLayoutContainer* container) const noexcept;
 
     bool getDepthWriteSet(bool* value) const noexcept;
@@ -126,6 +126,7 @@ public:
     bool getSpecularAntiAliasingVariance(float* value) const noexcept;
     bool getSpecularAntiAliasingThreshold(float* value) const noexcept;
     bool getStereoscopicType(backend::StereoscopicType*) const noexcept;
+    bool getMaterialCrc32(uint32_t* value) const noexcept;
 
     bool getShader(filaflat::ShaderContent& shader, backend::ShaderModel shaderModel,
             Variant variant, backend::ShaderStage stage) noexcept;

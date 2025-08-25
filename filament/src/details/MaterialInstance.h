@@ -29,6 +29,8 @@
 
 #include <filament/MaterialInstance.h>
 
+#include <private/filament/Variant.h>
+
 #include <backend/DriverEnums.h>
 #include <backend/Handle.h>
 
@@ -67,9 +69,11 @@ public:
 
     void commitStreamUniformAssociations(FEngine::DriverApi& driver);
     
+    void commit(FEngine& engine) const;
+
     void commit(FEngine::DriverApi& driver) const;
 
-    void use(FEngine::DriverApi& driver) const;
+    void use(FEngine::DriverApi& driver, Variant variant = {}) const;
 
     FMaterial const* getMaterial() const noexcept { return mMaterial; }
 

@@ -20,7 +20,7 @@
 
 #include <utils/Allocator.h>
 #include <utils/CString.h>
-#include <utils/Log.h>
+#include <utils/Logger.h>
 #include <utils/Panic.h>
 #include <utils/compiler.h>
 #include <utils/debug.h>
@@ -57,8 +57,8 @@ HandleAllocator<P0, P1, P2>::Allocator::Allocator(AreaPolicy::HeapArea const& ar
     size_t const maxHeapSize = std::min(area.size(), HANDLE_INDEX_MASK * getAlignment());
 
     if (UTILS_UNLIKELY(maxHeapSize != area.size())) {
-        slog.w << "HandleAllocator heap size reduced to "
-               << maxHeapSize << " from " << area.size() << io::endl;
+        LOG(WARNING) << "HandleAllocator heap size reduced to " << maxHeapSize << " from "
+                     << area.size();
     }
 
     // make sure we start with a clean arena. This is needed to ensure that all blocks start
@@ -209,6 +209,10 @@ template class HandleAllocatorVK;
 
 #if defined (FILAMENT_SUPPORTS_METAL)
 template class HandleAllocatorMTL;
+#endif
+
+#if defined (FILAMENT_SUPPORTS_WEBGPU)
+template class HandleAllocatorWGPU;
 #endif
 
 } // namespace filament::backend

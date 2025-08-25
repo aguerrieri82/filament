@@ -23,6 +23,7 @@
 #include <private/filament/SamplerInterfaceBlock.h>
 
 #include "ShaderMinifier.h"
+#include "SpirvRemapWrapper.h"
 
 #include <spirv-tools/optimizer.hpp>
 
@@ -57,7 +58,10 @@ public:
         GENERATE_DEBUG_INFO = 1 << 1,
     };
 
-    GLSLPostProcessor(MaterialBuilder::Optimization optimization, uint32_t flags);
+    GLSLPostProcessor(
+            MaterialBuilder::Optimization optimization,
+            MaterialBuilder::Workarounds workarounds,
+            uint32_t flags);
 
     ~GLSLPostProcessor();
 
@@ -66,6 +70,7 @@ public:
         filament::UserVariantFilterMask variantFilter;
         MaterialBuilder::TargetApi targetApi;
         MaterialBuilder::TargetLanguage targetLanguage;
+        MaterialBuilder::Workarounds workarounds;
         filament::backend::ShaderStage shaderType;
         filament::backend::ShaderModel shaderModel;
         filament::backend::FeatureLevel featureLevel;
@@ -114,18 +119,25 @@ private:
      * Retrieve an optimizer instance tuned for the given optimization level and shader configuration.
      */
     using OptimizerPtr = std::shared_ptr<spvtools::Optimizer>;
+
     static OptimizerPtr createOptimizer(
             MaterialBuilder::Optimization optimization,
             Config const& config);
 
+    static OptimizerPtr createEmptyOptimizer();
+
     static void registerSizePasses(spvtools::Optimizer& optimizer, Config const& config);
+
     static void registerPerformancePasses(spvtools::Optimizer& optimizer, Config const& config);
 
-    void optimizeSpirv(OptimizerPtr optimizer, SpirvBlob& spirv) const;
+    static void optimizeSpirv(OptimizerPtr optimizer, SpirvBlob &spirv);
+
+    static void rebindImageSamplerForWGSL(std::vector<uint32_t>& spirv);
 
     void fixupClipDistance(SpirvBlob& spirv, GLSLPostProcessor::Config const& config) const;
 
     const MaterialBuilder::Optimization mOptimization;
+    const MaterialBuilder::Workarounds mWorkarounds;
     const bool mPrintShaders;
     const bool mGenerateDebugInfo;
 };

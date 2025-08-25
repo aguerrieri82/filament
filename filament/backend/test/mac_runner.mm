@@ -49,6 +49,9 @@ test::NativeView getNativeView() {
     if (self.backend == test::Backend::VULKAN) {
         nativeView.ptr = (void*) view;
     }
+    if (self.backend == test::Backend::WEBGPU) {
+        nativeView.ptr = (void*) view.layer;
+    }
     CGSize drawableSize = ((CAMetalLayer*) view.layer).drawableSize;
     nativeView.width = static_cast<size_t>(drawableSize.width);
     nativeView.height = static_cast<size_t>(drawableSize.height);
@@ -98,7 +101,7 @@ test::NativeView getNativeView() {
 
 int main(int argc, char* argv[]) {
     auto backend = test::parseArgumentsForBackend(argc, argv);
-    test::initTests(backend, false, argc, argv);
+    test::initTests(backend, test::OperatingSystem::APPLE, false, argc, argv);
     AppDelegate* delegate = [AppDelegate new];
     delegate.backend = backend;
     NSApplication* app = [NSApplication sharedApplication];

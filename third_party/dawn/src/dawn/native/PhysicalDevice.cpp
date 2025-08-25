@@ -52,6 +52,10 @@ MaybeError PhysicalDeviceBase::Initialize() {
     DAWN_TRY_CONTEXT(InitializeImpl(), "initializing adapter (backend=%s)", mBackend);
     InitializeVendorArchitectureImpl();
 
+    if (SupportsFeatureLevel(wgpu::FeatureLevel::Core, nullptr)) {
+        EnableFeature(Feature::CoreFeaturesAndLimits);
+    }
+
     EnableFeature(Feature::DawnNative);
     EnableFeature(Feature::DawnInternalUsages);
     EnableFeature(Feature::ImplicitDeviceSynchronization);
@@ -64,7 +68,7 @@ MaybeError PhysicalDeviceBase::Initialize() {
         "backend=%s type=%s)",
         mName, mDriverDescription, mVendorId, mDeviceId, mBackend, mAdapterType);
 
-    NormalizeLimits(&mLimits.v1);
+    NormalizeLimits(&mLimits);
 
     return {};
 }
@@ -131,7 +135,7 @@ bool PhysicalDeviceBase::IsFeatureSupportedWithToggles(wgpu::FeatureName feature
     return ValidateFeatureSupportedWithToggles(feature, toggles).success;
 }
 
-void PhysicalDeviceBase::GetDefaultLimitsForSupportedFeatureLevel(Limits* limits) const {
+void PhysicalDeviceBase::GetDefaultLimitsForSupportedFeatureLevel(CombinedLimits* limits) const {
     // If the physical device does not support core then the defaults are compat defaults.
     GetDefaultLimits(limits, SupportsFeatureLevel(wgpu::FeatureLevel::Core, nullptr)
                                  ? wgpu::FeatureLevel::Core
@@ -142,7 +146,7 @@ FeaturesSet PhysicalDeviceBase::GetSupportedFeatures(const TogglesState& toggles
     FeaturesSet supportedFeaturesWithToggles;
     // Iterate each PhysicalDevice's supported feature and check if it is supported with given
     // toggles
-    for (Feature feature : IterateBitSet(mSupportedFeatures.featuresBitSet)) {
+    for (Feature feature : mSupportedFeatures.featuresBitSet) {
         if (IsFeatureSupportedWithToggles(ToAPI(feature), toggles)) {
             supportedFeaturesWithToggles.EnableFeature(feature);
         }

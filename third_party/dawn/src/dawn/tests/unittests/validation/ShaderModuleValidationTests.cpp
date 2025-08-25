@@ -25,22 +25,71 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "dawn/common/Constants.h"
+#include "dawn/native/CompilationMessages.h"
 #include "dawn/native/ShaderModule.h"
 #include "dawn/tests/unittests/validation/ValidationTest.h"
 #include "dawn/utils/ComboRenderPipelineDescriptor.h"
 #include "dawn/utils/WGPUHelpers.h"
+
+#if TINT_BUILD_SPV_READER && !defined(__EMSCRIPTEN__)
+#include "spirv-tools/optimizer.hpp"
+#endif  // TINT_BUILD_SPV_READER && !defined(__EMSCRIPTEN__)
 
 namespace dawn {
 namespace {
 
 class ShaderModuleValidationTest : public ValidationTest {};
 
-#if TINT_BUILD_SPV_READER
+#if TINT_BUILD_SPV_READER && !defined(__EMSCRIPTEN__)
+
+wgpu::ShaderModule CreateShaderModuleFromASM(
+    const wgpu::Device& device,
+    const char* source,
+    wgpu::DawnShaderModuleSPIRVOptionsDescriptor* spirv_options = nullptr) {
+    // Use SPIRV-Tools's C API to assemble the SPIR-V assembly text to binary. Because the types
+    // aren't RAII, we don't return directly on success and instead always go through the code
+    // path that destroys the SPIRV-Tools objects.
+    wgpu::ShaderModule result = nullptr;
+
+    spv_context context = spvContextCreate(SPV_ENV_UNIVERSAL_1_3);
+    DAWN_ASSERT(context != nullptr);
+
+    spv_binary spirv = nullptr;
+    spv_diagnostic diagnostic = nullptr;
+    if (spvTextToBinary(context, source, strlen(source), &spirv, &diagnostic) == SPV_SUCCESS) {
+        DAWN_ASSERT(spirv != nullptr);
+        DAWN_ASSERT(spirv->wordCount <= std::numeric_limits<uint32_t>::max());
+
+        wgpu::ShaderSourceSPIRV spirvDesc;
+        spirvDesc.codeSize = static_cast<uint32_t>(spirv->wordCount);
+        spirvDesc.code = spirv->code;
+        spirvDesc.nextInChain = spirv_options;
+
+        wgpu::ShaderModuleDescriptor descriptor;
+        descriptor.nextInChain = &spirvDesc;
+        result = device.CreateShaderModule(&descriptor);
+    } else {
+        DAWN_ASSERT(diagnostic != nullptr);
+        dawn::WarningLog() << "CreateShaderModuleFromASM SPIRV assembly error:"
+                           << diagnostic->position.line + 1 << ":"
+                           << diagnostic->position.column + 1 << ": " << diagnostic->error;
+    }
+
+    spvDiagnosticDestroy(diagnostic);
+    spvBinaryDestroy(spirv);
+    spvContextDestroy(context);
+
+    return result;
+}
+
 // Test case with a simpler shader that should successfully be created
 TEST_F(ShaderModuleValidationTest, CreationSuccess) {
     const char* shader = R"(
@@ -70,10 +119,14 @@ TEST_F(ShaderModuleValidationTest, CreationSuccess) {
                    OpReturn
                    OpFunctionEnd)";
 
-    utils::CreateShaderModuleFromASM(device, shader);
+    CreateShaderModuleFromASM(device, shader);
 }
 
-// Test that it is not allowed to use combined texture and sampler.
+// Tint's SPIR-V reader transforms a combined image sampler into two
+// variables: an image part and a sampler part.  The sampler part's binding
+// number is incremented. This may produce a conflict, which is solved
+// by iterating further binding increments.  It's easy to use in simple cases:
+// a sampled image variable effectively takes up two binding slots.
 TEST_F(ShaderModuleValidationTest, CombinedTextureAndSampler) {
     // SPIR-V ASM produced by glslang for the following fragment shader:
     //
@@ -111,7 +164,45 @@ TEST_F(ShaderModuleValidationTest, CombinedTextureAndSampler) {
                OpFunctionEnd
         )";
 
-    ASSERT_DEVICE_ERROR(utils::CreateShaderModuleFromASM(device, shader));
+    CreateShaderModuleFromASM(device, shader);
+}
+
+TEST_F(ShaderModuleValidationTest, ArrayOfCombinedTextureAndSampler) {
+    // SPIR-V ASM produced by glslang for the following fragment shader:
+    //
+    //   #version 450
+    //   layout(set = 0, binding = 0) uniform sampler2D tex[2];
+    //   void main () {}
+    //
+    // Dawn/WebGPU does not yet support arrays of sampled images.
+    const char* shader = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main"
+               OpExecutionMode %main OriginUpperLeft
+               OpSource GLSL 450
+               OpName %main "main"
+               OpName %tex "tex"
+               OpDecorate %tex Binding 0
+               OpDecorate %tex DescriptorSet 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+          %7 = OpTypeImage %float 2D 0 0 0 1 Unknown
+          %8 = OpTypeSampledImage %7
+       %uint = OpTypeInt 32 0
+     %uint_2 = OpConstant %uint 2
+%_arr_8_uint_2 = OpTypeArray %8 %uint_2
+%_ptr_UniformConstant__arr_8_uint_2 = OpTypePointer UniformConstant %_arr_8_uint_2
+        %tex = OpVariable %_ptr_UniformConstant__arr_8_uint_2 UniformConstant
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+               OpReturn
+               OpFunctionEnd
+        )";
+
+    ASSERT_DEVICE_ERROR(CreateShaderModuleFromASM(device, shader));
 }
 
 // Test that it is not allowed to declare a multisampled-array interface texture.
@@ -152,7 +243,7 @@ TEST_F(ShaderModuleValidationTest, MultisampledArrayTexture) {
                OpFunctionEnd
         )";
 
-    ASSERT_DEVICE_ERROR(utils::CreateShaderModuleFromASM(device, shader));
+    ASSERT_DEVICE_ERROR(CreateShaderModuleFromASM(device, shader));
 }
 
 const char* kShaderWithNonUniformDerivative = R"(
@@ -184,7 +275,7 @@ const char* kShaderWithNonUniformDerivative = R"(
 // Test that creating a module with a SPIR-V shader that has a uniformity violation fails when no
 // SPIR-V options descriptor is used.
 TEST_F(ShaderModuleValidationTest, NonUniformDerivatives_NoOptions) {
-    ASSERT_DEVICE_ERROR(utils::CreateShaderModuleFromASM(device, kShaderWithNonUniformDerivative));
+    ASSERT_DEVICE_ERROR(CreateShaderModuleFromASM(device, kShaderWithNonUniformDerivative));
 }
 
 // Test that creating a module with a SPIR-V shader that has a uniformity violation fails when
@@ -192,8 +283,8 @@ TEST_F(ShaderModuleValidationTest, NonUniformDerivatives_NoOptions) {
 TEST_F(ShaderModuleValidationTest, NonUniformDerivatives_FlagSetToFalse) {
     wgpu::DawnShaderModuleSPIRVOptionsDescriptor spirv_options_desc = {};
     spirv_options_desc.allowNonUniformDerivatives = false;
-    ASSERT_DEVICE_ERROR(utils::CreateShaderModuleFromASM(device, kShaderWithNonUniformDerivative,
-                                                         &spirv_options_desc));
+    ASSERT_DEVICE_ERROR(
+        CreateShaderModuleFromASM(device, kShaderWithNonUniformDerivative, &spirv_options_desc));
 }
 
 // Test that creating a module with a SPIR-V shader that has a uniformity violation succeeds when
@@ -201,10 +292,10 @@ TEST_F(ShaderModuleValidationTest, NonUniformDerivatives_FlagSetToFalse) {
 TEST_F(ShaderModuleValidationTest, NonUniformDerivatives_FlagSetToTrue) {
     wgpu::DawnShaderModuleSPIRVOptionsDescriptor spirv_options_desc = {};
     spirv_options_desc.allowNonUniformDerivatives = true;
-    utils::CreateShaderModuleFromASM(device, kShaderWithNonUniformDerivative, &spirv_options_desc);
+    CreateShaderModuleFromASM(device, kShaderWithNonUniformDerivative, &spirv_options_desc);
 }
 
-#endif  // TINT_BUILD_SPV_READER
+#endif  // TINT_BUILD_SPV_READER && !defined(__EMSCRIPTEN__)
 
 // Test that it is invalid to create a shader module with no chained descriptor. (It must be
 // WGSL or SPIRV, not empty)
@@ -274,13 +365,19 @@ TEST_F(ShaderModuleValidationTest, GetCompilationMessages) {
         })");
 
     native::ShaderModuleBase* shaderModuleBase = native::FromAPI(shaderModule.Get());
-    native::OwnedCompilationMessages* messages = shaderModuleBase->GetCompilationMessages();
-    messages->ClearMessages();
-    messages->AddMessageForTesting("Info Message");
-    messages->AddMessageForTesting("Warning Message", wgpu::CompilationMessageType::Warning);
-    messages->AddMessageForTesting("Error Message", wgpu::CompilationMessageType::Error, 3, 4);
-    messages->AddMessageForTesting("Complete Message", wgpu::CompilationMessageType::Info, 3, 4, 5,
-                                   6);
+
+    // Build a list of messages to test.
+    native::ParsedCompilationMessages messages;
+    messages.AddMessageForTesting("Info Message");
+    messages.AddMessageForTesting("Warning Message", wgpu::CompilationMessageType::Warning);
+    messages.AddMessageForTesting("Error Message", wgpu::CompilationMessageType::Error, 3, 4);
+    messages.AddMessageForTesting("Complete Message", wgpu::CompilationMessageType::Info, 3, 4, 5,
+                                  6);
+    auto ownedMessages = std::make_unique<native::OwnedCompilationMessages>(std::move(messages));
+    // Set the messages on the shader module base.
+    shaderModuleBase->SetCompilationMessagesForTesting(&ownedMessages);
+    // Assert that the messages are set.
+    ASSERT_EQ(ownedMessages, nullptr);
 
     shaderModule.GetCompilationInfo(
         wgpu::CallbackMode::AllowSpontaneous,
@@ -294,18 +391,33 @@ TEST_F(ShaderModuleValidationTest, GetCompilationMessages) {
             ASSERT_EQ(wgpu::CompilationMessageType::Info, message->type);
             ASSERT_EQ(0u, message->lineNum);
             ASSERT_EQ(0u, message->linePos);
+            ASSERT_NE(nullptr, message->nextInChain);
+            ASSERT_EQ(wgpu::SType::DawnCompilationMessageUtf16, message->nextInChain->sType);
+            const wgpu::DawnCompilationMessageUtf16* utf16 =
+                reinterpret_cast<const wgpu::DawnCompilationMessageUtf16*>(message->nextInChain);
+            EXPECT_EQ(0u, utf16->linePos);
 
             message = &info->messages[1];
             ASSERT_EQ("Warning Message", std::string_view(message->message));
             ASSERT_EQ(wgpu::CompilationMessageType::Warning, message->type);
             ASSERT_EQ(0u, message->lineNum);
             ASSERT_EQ(0u, message->linePos);
+            ASSERT_NE(nullptr, message->nextInChain);
+            ASSERT_EQ(wgpu::SType::DawnCompilationMessageUtf16, message->nextInChain->sType);
+            utf16 =
+                reinterpret_cast<const wgpu::DawnCompilationMessageUtf16*>(message->nextInChain);
+            EXPECT_EQ(0u, utf16->linePos);
 
             message = &info->messages[2];
             ASSERT_EQ("Error Message", std::string_view(message->message));
             ASSERT_EQ(wgpu::CompilationMessageType::Error, message->type);
             ASSERT_EQ(3u, message->lineNum);
             ASSERT_EQ(4u, message->linePos);
+            ASSERT_NE(nullptr, message->nextInChain);
+            ASSERT_EQ(wgpu::SType::DawnCompilationMessageUtf16, message->nextInChain->sType);
+            utf16 =
+                reinterpret_cast<const wgpu::DawnCompilationMessageUtf16*>(message->nextInChain);
+            EXPECT_EQ(4u, utf16->linePos);
 
             message = &info->messages[3];
             ASSERT_EQ("Complete Message", std::string_view(message->message));
@@ -314,6 +426,13 @@ TEST_F(ShaderModuleValidationTest, GetCompilationMessages) {
             ASSERT_EQ(4u, message->linePos);
             ASSERT_EQ(5u, message->offset);
             ASSERT_EQ(6u, message->length);
+            ASSERT_NE(nullptr, message->nextInChain);
+            ASSERT_EQ(wgpu::SType::DawnCompilationMessageUtf16, message->nextInChain->sType);
+            utf16 =
+                reinterpret_cast<const wgpu::DawnCompilationMessageUtf16*>(message->nextInChain);
+            EXPECT_EQ(4u, utf16->linePos);
+            ASSERT_EQ(5u, utf16->offset);
+            ASSERT_EQ(6u, utf16->length);
         });
 }
 
@@ -758,15 +877,16 @@ const struct WGSLExtensionInfo kExtensions[] = {
     {"clip_distances", false, {"clip-distances"}, {}},
     {"dual_source_blending", false, {"dual-source-blending"}, {}},
     {"subgroups", false, {"subgroups"}, {}},
-    {"subgroups_f16", false, {"shader-f16", "subgroups", "subgroups-f16"}, {"f16", "subgroups"}},
     {"chromium_experimental_pixel_local", true, {"pixel-local-storage-coherent"}, {}},
     {"chromium_disable_uniformity_analysis", true, {}, {}},
     {"chromium_internal_graphite", true, {}, {}},
     {"chromium_experimental_framebuffer_fetch", true, {"framebuffer-fetch"}, {}},
+    {"chromium_experimental_subgroup_matrix", true, {"chromium-experimental-subgroup-matrix"}, {}},
+    {"chromium_experimental_primitive_id", true, {"chromium-experimental-primitive-id"}, {}},
 
     // Currently the following WGSL extensions are not enabled under any situation.
     /*
-    {"chromium_experimental_push_constant", true, {}},
+    {"chromium_experimental_immediate", true, {}},
     {"chromium_internal_relaxed_uniform_layout", true, {}},
     */
 };

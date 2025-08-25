@@ -29,13 +29,12 @@
 #include <android/native_window.h>
 #include <android/hardware_buffer.h>
 
+#include <utils/Logger.h>
+#include <utils/Panic.h>
 #include <utils/android/PerformanceHintManager.h>
-
+#include <utils/compiler.h>
 #include <utils/compiler.h>
 #include <utils/ostream.h>
-#include <utils/Panic.h>
-#include <utils/Log.h>
-#include <utils/compiler.h>
 #include <utils/ostream.h>
 
 #include <EGL/egl.h>
@@ -135,7 +134,7 @@ static constexpr const std::string_view kNativeWindowInvalidMsg =
 
 bool PlatformEGLAndroid::makeCurrent(ContextType type,
         SwapChain* drawSwapChain,
-        SwapChain* readSwapChain) noexcept {
+        SwapChain* readSwapChain) {
 
     // fast & safe path
     if (UTILS_LIKELY(!mAssertNativeWindowIsValid)) {
@@ -255,6 +254,7 @@ Platform::ExternalImageHandle PlatformEGLAndroid::createExternalImage(AHardwareB
         p->height = hardwareBufferDescription.height;
         p->width = hardwareBufferDescription.width;
         auto textureFormat = mapToFilamentFormat(hardwareBufferDescription.format, sRGB);
+        p->format = textureFormat;
         p->usage = mapToFilamentUsage(hardwareBufferDescription.usage, textureFormat);
         return ExternalImageHandle{ p };
     }
@@ -289,14 +289,19 @@ bool PlatformEGLAndroid::setExternalImage(ExternalImageHandleRef externalImage,
 }
 
 OpenGLPlatform::ExternalTexture* PlatformEGLAndroid::createExternalImageTexture() noexcept {
-    ExternalTexture* outTexture = new (std::nothrow) ExternalTexture{};
+    ExternalTextureAndroid* outTexture = new (std::nothrow) ExternalTextureAndroid{};
     glGenTextures(1, &outTexture->id);
     return outTexture;
 }
 
 void PlatformEGLAndroid::destroyExternalImageTexture(ExternalTexture* texture) noexcept {
+    ExternalTextureAndroid* outTexture = static_cast<ExternalTextureAndroid*>(texture);
     glDeleteTextures(1, &texture->id);
-    delete texture;
+
+    if (outTexture->eglImage != EGL_NO_IMAGE) {
+        eglDestroyImageKHR(eglGetCurrentDisplay(), outTexture->eglImage);
+    }
+    delete outTexture;
 }
 
 bool PlatformEGLAndroid::setImage(ExternalImageEGLAndroid const* eglExternalImage,
@@ -326,7 +331,7 @@ bool PlatformEGLAndroid::setImage(ExternalImageEGLAndroid const* eglExternalImag
             EGL_NATIVE_BUFFER_ANDROID, clientBuffer, imageAttrs);
     if (eglImage == EGL_NO_IMAGE_KHR) {
         // Handle error
-        slog.e << "Failed to create EGL image" << io::endl;
+        LOG(ERROR) << "Failed to create EGL image";
         glDeleteTextures(1, &texture->id);
         return false;
     }
@@ -339,7 +344,7 @@ bool PlatformEGLAndroid::setImage(ExternalImageEGLAndroid const* eglExternalImag
     glBindTexture(texture->target, texture->id);
     GLenum error = glGetError();
     if (UTILS_UNLIKELY(error != GL_NO_ERROR)) {
-        slog.e << "Error after glBindTexture: " << error << io::endl;
+        LOG(ERROR) << "Error after glBindTexture: " << error;
         glDeleteTextures(1, &texture->id);
         eglDestroyImageKHR(eglGetCurrentDisplay(), eglImage);
         glActiveTexture(prevActiveTexture);
@@ -349,13 +354,22 @@ bool PlatformEGLAndroid::setImage(ExternalImageEGLAndroid const* eglExternalImag
     glEGLImageTargetTexture2DOES(texture->target, static_cast<GLeglImageOES>(eglImage));
     error = glGetError();
     if (UTILS_UNLIKELY(error != GL_NO_ERROR)) {
-        slog.e << "Error after glEGLImageTargetTexture2DOES: " << error << io::endl;
+        LOG(ERROR) << "Error after glEGLImageTargetTexture2DOES: " << error;
         glDeleteTextures(1, &texture->id);
         eglDestroyImageKHR(eglGetCurrentDisplay(), eglImage);
         glActiveTexture(prevActiveTexture);
         glBindTexture(GL_TEXTURE_2D, prevTexture);
         return false;
     }
+    ExternalTextureAndroid* outTexture = static_cast<ExternalTextureAndroid*>(texture);
+
+    // Make sure to destroy the previous binded image, to avoid leaking memory
+    if (outTexture->eglImage != EGL_NO_IMAGE) {
+        eglDestroyImageKHR(eglGetCurrentDisplay(), outTexture->eglImage);
+    }
+
+    outTexture->eglImage = eglImage;
+
     glActiveTexture(prevActiveTexture);
     glBindTexture(GL_TEXTURE_2D, prevTexture);
     return true;
@@ -407,7 +421,7 @@ AcquiredImage PlatformEGLAndroid::transformAcquiredImage(AcquiredImage source) n
 
     EGLClientBuffer clientBuffer = eglGetNativeClientBufferANDROID(pHardwareBuffer);
     if (!clientBuffer) {
-        slog.e << "Unable to get EGLClientBuffer from AHardwareBuffer." << io::endl;
+        LOG(ERROR) << "Unable to get EGLClientBuffer from AHardwareBuffer.";
         return {};
     }
 
@@ -426,7 +440,7 @@ AcquiredImage PlatformEGLAndroid::transformAcquiredImage(AcquiredImage source) n
     EGLImageKHR eglImage = eglCreateImageKHR(mEGLDisplay,
             EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, clientBuffer, attributes.data());
     if (eglImage == EGL_NO_IMAGE_KHR) {
-        slog.e << "eglCreateImageKHR returned no image." << io::endl;
+        LOG(ERROR) << "eglCreateImageKHR returned no image.";
         return {};
     }
 
@@ -441,7 +455,7 @@ AcquiredImage PlatformEGLAndroid::transformAcquiredImage(AcquiredImage source) n
     auto patchedCallback = [](void* image, void* userdata) {
         Closure* closure = (Closure*)userdata;
         if (eglDestroyImageKHR(closure->display, (EGLImageKHR) image) == EGL_FALSE) {
-            slog.e << "eglDestroyImageKHR failed." << io::endl;
+            LOG(ERROR) << "eglDestroyImageKHR failed.";
         }
         closure->acquiredImage.callback(closure->acquiredImage.image, closure->acquiredImage.userData);
         delete closure;

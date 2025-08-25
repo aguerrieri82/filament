@@ -355,10 +355,10 @@ TEST_F(CompatValidationTest, CanNotCreatePipelineWithDepthTextureUsedWithNonComp
 }
 
 TEST_F(CompatValidationTest, CanNotUseTooManyTextureSamplerCombos) {
-    wgpu::SupportedLimits limits;
+    wgpu::Limits limits;
     device.GetLimits(&limits);
-    uint32_t maxCombos = std::min(limits.limits.maxSampledTexturesPerShaderStage,
-                                  limits.limits.maxSamplersPerShaderStage);
+    uint32_t maxCombos =
+        std::min(limits.maxSampledTexturesPerShaderStage, limits.maxSamplersPerShaderStage);
 
     struct Test {
         bool expectSuccess;
@@ -395,7 +395,7 @@ TEST_F(CompatValidationTest, CanNotUseTooManyTextureSamplerCombos) {
     // clang-format on
     for (const auto& test : comboTests) {
         uint32_t maxTexturesPerShaderStage =
-            limits.limits.maxSampledTexturesPerShaderStage - (test.numExternalTextures * 3);
+            limits.maxSampledTexturesPerShaderStage - (test.numExternalTextures * 3);
         auto numCombos = test.numCombos;
         std::vector<std::string> textureDeclarations[2];
         std::vector<std::string> samplerDeclarations[2];
@@ -406,8 +406,8 @@ TEST_F(CompatValidationTest, CanNotUseTooManyTextureSamplerCombos) {
                 textureDeclarations[stage].push_back(
                     absl::StrFormat("@group(%u) @binding(%u) var t%u_%u: texture_2d<f32>;",
                                     stage * 2, t, stage, t));
-                for (uint32_t s = 0;
-                     count < numCombos && t < limits.limits.maxSamplersPerShaderStage; ++s) {
+                for (uint32_t s = 0; count < numCombos && t < limits.maxSamplersPerShaderStage;
+                     ++s) {
                     if (t == 0) {
                         samplerDeclarations[stage].push_back(
                             absl::StrFormat("@group(%u) @binding(%u) var s%u_%u: sampler;",
@@ -678,7 +678,7 @@ TEST_F(CompatValidationTest, CanNotCreateRGxxxStorageTexture) {
     }
 }
 
-TEST_F(CompatValidationTest, CanNotUseStorageBufferInFragmentAndVertexStageWithDefaultLimit0) {
+TEST_F(CompatValidationTest, CanNotUseStorageBufferInVertexStageWithDefaultLimit0) {
     const wgpu::ShaderStage stages[] = {
         wgpu::ShaderStage::Compute,
         wgpu::ShaderStage::Fragment,
@@ -703,7 +703,7 @@ TEST_F(CompatValidationTest, CanNotUseStorageBufferInFragmentAndVertexStageWithD
             descriptor.entryCount = 1;
             descriptor.entries = entries;
 
-            if (stage == wgpu::ShaderStage::Compute) {
+            if (stage != wgpu::ShaderStage::Vertex) {
                 wgpu::BindGroupLayout layout = device.CreateBindGroupLayout(&descriptor);
             } else {
                 ASSERT_DEVICE_ERROR(device.CreateBindGroupLayout(&descriptor),
@@ -713,7 +713,7 @@ TEST_F(CompatValidationTest, CanNotUseStorageBufferInFragmentAndVertexStageWithD
     }
 }
 
-TEST_F(CompatValidationTest, CanNotUseStorageTexturesInFragmentAndVertexStageWithDefaultLimit0) {
+TEST_F(CompatValidationTest, CanNotUseStorageTexturesInVertexStageWithDefaultLimit0) {
     const wgpu::ShaderStage stages[] = {
         wgpu::ShaderStage::Compute,
         wgpu::ShaderStage::Fragment,
@@ -741,7 +741,7 @@ TEST_F(CompatValidationTest, CanNotUseStorageTexturesInFragmentAndVertexStageWit
             descriptor.entryCount = 1;
             descriptor.entries = entries;
 
-            if (stage == wgpu::ShaderStage::Compute) {
+            if (stage != wgpu::ShaderStage::Vertex) {
                 wgpu::BindGroupLayout layout = device.CreateBindGroupLayout(&descriptor);
             } else {
                 ASSERT_DEVICE_ERROR(device.CreateBindGroupLayout(&descriptor),
@@ -772,6 +772,27 @@ constexpr const char* kRenderTwoTexturesOneBindgroupWGSL = R"(
     }
 )";
 
+constexpr const char* kSampleDepthSampleStencilOneBindgroupWGSL = R"(
+    @vertex
+    fn vs(@builtin(vertex_index) VertexIndex : u32) -> @builtin(position) vec4f {
+        var pos = array(
+            vec4f(-1,  3, 0, 1),
+            vec4f( 3, -1, 0, 1),
+            vec4f(-1, -1, 0, 1));
+        return pos[VertexIndex];
+    }
+
+    @group(0) @binding(0) var depth : texture_2d<f32>;
+    @group(0) @binding(1) var stencil : texture_2d<u32>;
+
+    @fragment
+    fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+        _ = depth;
+        _ = stencil;
+        return vec4f(0);
+    }
+)";
+
 constexpr const char* kRenderTwoTexturesTwoBindgroupsWGSL = R"(
     @vertex
     fn vs(@builtin(vertex_index) VertexIndex : u32) -> @builtin(position) vec4f {
@@ -795,6 +816,7 @@ constexpr const char* kRenderTwoTexturesTwoBindgroupsWGSL = R"(
 
 void TestMultipleTextureViewValidationInRenderPass(
     wgpu::Device device,
+    wgpu::TextureFormat format,
     const char* wgsl,
     std::function<void(wgpu::Device device,
                        wgpu::Texture texture,
@@ -804,7 +826,7 @@ void TestMultipleTextureViewValidationInRenderPass(
     descriptor.size = {2, 1, 1};
     descriptor.mipLevelCount = 2;
     descriptor.dimension = wgpu::TextureDimension::e2D;
-    descriptor.format = wgpu::TextureFormat::RGBA8Unorm;
+    descriptor.format = format;
     descriptor.usage = wgpu::TextureUsage::TextureBinding;
     wgpu::Texture texture = device.CreateTexture(&descriptor);
 
@@ -881,7 +903,7 @@ class CompatTextureViewValidationTests
 // in the same bind group. Unless FlexibleTextureViews is enabled.
 TEST_P(CompatTextureViewValidationTests, CanNotDrawDifferentMipsSameTextureSameBindGroup) {
     TestMultipleTextureViewValidationInRenderPass(
-        device, kRenderTwoTexturesOneBindgroupWGSL,
+        device, wgpu::TextureFormat::RGBA8Unorm, kRenderTwoTexturesOneBindgroupWGSL,
         [this](wgpu::Device device, wgpu::Texture texture, wgpu::RenderPipeline pipeline,
                std::function<void(wgpu::RenderPassEncoder pass)> drawFn) {
             wgpu::TextureViewDescriptor mip0ViewDesc;
@@ -916,7 +938,7 @@ TEST_P(CompatTextureViewValidationTests, CanNotDrawDifferentMipsSameTextureSameB
 // different bind groups. Unless FlexibleTextureViews is enabled.
 TEST_P(CompatTextureViewValidationTests, CanNotDrawDifferentMipsSameTextureDifferentBindGroups) {
     TestMultipleTextureViewValidationInRenderPass(
-        device, kRenderTwoTexturesTwoBindgroupsWGSL,
+        device, wgpu::TextureFormat::RGBA8Unorm, kRenderTwoTexturesTwoBindgroupsWGSL,
         [this](wgpu::Device device, wgpu::Texture texture, wgpu::RenderPipeline pipeline,
                std::function<void(wgpu::RenderPassEncoder pass)> drawFn) {
             wgpu::TextureViewDescriptor mip0ViewDesc;
@@ -957,7 +979,7 @@ TEST_P(CompatTextureViewValidationTests, CanNotDrawDifferentMipsSameTextureDiffe
 TEST_P(CompatTextureViewValidationTests,
        CanBindDifferentMipsSameTextureSameBindGroupAndFixWithoutError) {
     TestMultipleTextureViewValidationInRenderPass(
-        device, kRenderTwoTexturesOneBindgroupWGSL,
+        device, wgpu::TextureFormat::RGBA8Unorm, kRenderTwoTexturesOneBindgroupWGSL,
         [](wgpu::Device device, wgpu::Texture texture, wgpu::RenderPipeline pipeline,
            std::function<void(wgpu::RenderPassEncoder pass)> drawFn) {
             wgpu::TextureViewDescriptor mip0ViewDesc;
@@ -999,7 +1021,7 @@ TEST_P(CompatTextureViewValidationTests,
 // bindgroups, does not generate a validation error.
 TEST_P(CompatTextureViewValidationTests, CanBindSameViewIn2BindGroups) {
     TestMultipleTextureViewValidationInRenderPass(
-        device, kRenderTwoTexturesTwoBindgroupsWGSL,
+        device, wgpu::TextureFormat::RGBA8Unorm, kRenderTwoTexturesTwoBindgroupsWGSL,
         [](wgpu::Device device, wgpu::Texture texture, wgpu::RenderPipeline pipeline,
            std::function<void(wgpu::RenderPassEncoder pass)> drawFn) {
             wgpu::TextureViewDescriptor mip0ViewDesc;
@@ -1034,7 +1056,7 @@ TEST_P(CompatTextureViewValidationTests, CanBindSameViewIn2BindGroups) {
 // but don't draw.
 TEST_P(CompatTextureViewValidationTests, NoErrorIfMultipleDifferentViewsOfTextureAreNotUsed) {
     TestMultipleTextureViewValidationInRenderPass(
-        device, kRenderTwoTexturesTwoBindgroupsWGSL,
+        device, wgpu::TextureFormat::RGBA8Unorm, kRenderTwoTexturesTwoBindgroupsWGSL,
         [](wgpu::Device device, wgpu::Texture texture, wgpu::RenderPipeline pipeline,
            std::function<void(wgpu::RenderPassEncoder pass)> drawFn) {
             wgpu::TextureViewDescriptor mip0ViewDesc;
@@ -1775,6 +1797,37 @@ TEST_P(CompatTextureViewDimensionValidationTests, CubeTextureViewDimensionCanNot
                                      HasFlexibleTextureViews());
 }
 
+TEST_P(CompatTextureViewValidationTests, CanNotDrawDifferentAspectSameTextureSameBindGroup) {
+    TestMultipleTextureViewValidationInRenderPass(
+        device, wgpu::TextureFormat::Depth24PlusStencil8, kSampleDepthSampleStencilOneBindgroupWGSL,
+        [this](wgpu::Device device, wgpu::Texture texture, wgpu::RenderPipeline pipeline,
+               std::function<void(wgpu::RenderPassEncoder pass)> drawFn) {
+            wgpu::TextureViewDescriptor viewDesc1;
+            viewDesc1.dimension = wgpu::TextureViewDimension::e2D;
+            viewDesc1.aspect = wgpu::TextureAspect::DepthOnly;
+
+            wgpu::TextureViewDescriptor viewDesc2;
+            viewDesc2.dimension = wgpu::TextureViewDimension::e2D;
+            viewDesc2.aspect = wgpu::TextureAspect::StencilOnly;
+
+            wgpu::BindGroup bindGroup = utils::MakeBindGroup(
+                device, pipeline.GetBindGroupLayout(0),
+                {{0, texture.CreateView(&viewDesc1)}, {1, texture.CreateView(&viewDesc2)}});
+
+            wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+
+            utils::BasicRenderPass rp = utils::CreateBasicRenderPass(device, 4, 1);
+            wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp.renderPassInfo);
+            pass.SetPipeline(pipeline);
+            pass.SetBindGroup(0, bindGroup);
+            drawFn(pass);
+            pass.End();
+
+            ASSERT_TEXTURE_VIEW_ERROR_IF_NO_FLEXIBLE_FEATURE(encoder.Finish(),
+                                                             testing::HasSubstr("different views"));
+        });
+}
+
 // Test 2Darray != 2d
 // Test cube !== 2d
 // Test cube !== 2d-array
@@ -1866,10 +1919,10 @@ TEST_F(CompatCompressedCopyT2BAndCopyT2TValidationTests, CanNotCopyCompressedTex
 class CompatMaxVertexAttributesTest : public CompatValidationTest {
   protected:
     void TestMaxVertexAttributes(bool usesVertexIndex, bool usesInstanceIndex) {
-        wgpu::SupportedLimits limits;
+        wgpu::Limits limits;
         device.GetLimits(&limits);
 
-        uint32_t maxAttributes = limits.limits.maxVertexAttributes;
+        uint32_t maxAttributes = limits.maxVertexAttributes;
         uint32_t numAttributesUsedByBuiltins =
             (usesVertexIndex ? 1 : 0) + (usesInstanceIndex ? 1 : 0);
 
@@ -1950,6 +2003,86 @@ TEST_F(CompatMaxVertexAttributesTest, VertexAndInstanceIndexEachTakeAnAttribute)
     TestMaxVertexAttributes(true, true);
 }
 
+enum class SwizzleChannel {
+    Red,
+    Green,
+    Blue,
+    Alpha,
+};
+
+class CompatTextureViewSwizzleValidationTests : public CompatTextureViewValidationTests {
+  protected:
+    std::vector<wgpu::FeatureName> GetRequiredFeatures() override {
+        std::vector<wgpu::FeatureName> requiredFeatures =
+            CompatTextureViewValidationTests::GetRequiredFeatures();
+        requiredFeatures.push_back(wgpu::FeatureName::TextureComponentSwizzle);
+        return requiredFeatures;
+    }
+
+    void SetSwizzleChannel(wgpu::TextureComponentSwizzle& swizzle,
+                           SwizzleChannel channel,
+                           wgpu::ComponentSwizzle value) {
+        switch (channel) {
+            case SwizzleChannel::Red:
+                swizzle.r = value;
+                break;
+            case SwizzleChannel::Green:
+                swizzle.g = value;
+                break;
+            case SwizzleChannel::Blue:
+                swizzle.b = value;
+                break;
+            case SwizzleChannel::Alpha:
+                swizzle.a = value;
+                break;
+            default:
+                DAWN_UNREACHABLE();
+        }
+    }
+};
+
+// Test we get a validation error if we have 2 different swizzles of a texture
+// in the same bind group. Unless FlexibleTextureViews is enabled.
+TEST_P(CompatTextureViewSwizzleValidationTests,
+       CanNotDrawDifferentSwizzleSameTextureSameBindGroup) {
+    for (auto swizzleChannel : {SwizzleChannel::Red, SwizzleChannel::Green, SwizzleChannel::Blue,
+                                SwizzleChannel::Alpha}) {
+        TestMultipleTextureViewValidationInRenderPass(
+            device, wgpu::TextureFormat::RGBA8Unorm, kRenderTwoTexturesOneBindgroupWGSL,
+            [this, &swizzleChannel](wgpu::Device device, wgpu::Texture texture,
+                                    wgpu::RenderPipeline pipeline,
+                                    std::function<void(wgpu::RenderPassEncoder pass)> drawFn) {
+                wgpu::TextureViewDescriptor viewDesc1;
+                wgpu::TextureComponentSwizzleDescriptor swizzleDesc1 = {};
+                SetSwizzleChannel(swizzleDesc1.swizzle, swizzleChannel,
+                                  wgpu::ComponentSwizzle::Zero);
+                viewDesc1.nextInChain = &swizzleDesc1;
+
+                wgpu::TextureViewDescriptor viewDesc2;
+                wgpu::TextureComponentSwizzleDescriptor swizzleDesc2 = {};
+                SetSwizzleChannel(swizzleDesc2.swizzle, swizzleChannel,
+                                  wgpu::ComponentSwizzle::One);
+                viewDesc2.nextInChain = &swizzleDesc2;
+
+                wgpu::BindGroup bindGroup = utils::MakeBindGroup(
+                    device, pipeline.GetBindGroupLayout(0),
+                    {{0, texture.CreateView(&viewDesc1)}, {1, texture.CreateView(&viewDesc2)}});
+
+                wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+
+                utils::BasicRenderPass rp = utils::CreateBasicRenderPass(device, 4, 1);
+                wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp.renderPassInfo);
+                pass.SetPipeline(pipeline);
+                pass.SetBindGroup(0, bindGroup);
+                drawFn(pass);
+                pass.End();
+
+                ASSERT_TEXTURE_VIEW_ERROR_IF_NO_FLEXIBLE_FEATURE(
+                    encoder.Finish(), testing::HasSubstr("different views"));
+            });
+    }
+}
+
 INSTANTIATE_TEST_SUITE_P(,
                          CompatTextureViewValidationTests,
                          ::testing::Values(FlexibleTextureViewsFeature::Disabled,
@@ -1962,23 +2095,23 @@ INSTANTIATE_TEST_SUITE_P(,
                                            FlexibleTextureViewsFeature::Enabled),
                          CompatTextureViewValidationTests::PrintToStringParamName);
 
+INSTANTIATE_TEST_SUITE_P(,
+                         CompatTextureViewSwizzleValidationTests,
+                         ::testing::Values(FlexibleTextureViewsFeature::Disabled,
+                                           FlexibleTextureViewsFeature::Enabled),
+                         CompatTextureViewValidationTests::PrintToStringParamName);
+
 class CompatLayoutLimitsTests : public CompatValidationTest {
   protected:
-    wgpu::RequiredLimits GetRequiredLimits(const wgpu::SupportedLimits& supported) override {
-        wgpu::RequiredLimits required = {};
-        required.limits.maxStorageBuffersInFragmentStage =
-            supported.limits.maxStorageBuffersInFragmentStage / 2;
-        required.limits.maxStorageBuffersInVertexStage =
-            supported.limits.maxStorageBuffersInVertexStage / 2;
-        required.limits.maxStorageTexturesInFragmentStage =
-            supported.limits.maxStorageTexturesInFragmentStage / 2;
-        required.limits.maxStorageTexturesInVertexStage =
-            supported.limits.maxStorageTexturesInVertexStage / 2;
-        required.limits.maxStorageBuffersPerShaderStage =
-            supported.limits.maxStorageBuffersPerShaderStage;
-        required.limits.maxStorageTexturesPerShaderStage =
-            supported.limits.maxStorageTexturesPerShaderStage;
-        return required;
+    void GetRequiredLimits(const dawn::utils::ComboLimits& supported,
+                           dawn::utils::ComboLimits& required) override {
+        required.maxStorageBuffersInFragmentStage = supported.maxStorageBuffersInFragmentStage / 2;
+        required.maxStorageBuffersInVertexStage = supported.maxStorageBuffersInVertexStage / 2;
+        required.maxStorageTexturesInFragmentStage =
+            supported.maxStorageTexturesInFragmentStage / 2;
+        required.maxStorageTexturesInVertexStage = supported.maxStorageTexturesInVertexStage / 2;
+        required.maxStorageBuffersPerShaderStage = supported.maxStorageBuffersPerShaderStage;
+        required.maxStorageTexturesPerShaderStage = supported.maxStorageTexturesPerShaderStage;
     }
 
     void DoBindGroupLayoutTest(uint32_t limitInStage,
@@ -2037,7 +2170,7 @@ class CompatLayoutLimitsTests : public CompatValidationTest {
 // Test that in compat we get an error if we use more than maxStorageBuffersInFragmentStage
 // when it's lower than maxStorageBuffersPerShaderStage in createBindGroupLayout
 TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageBuffersInFragmentStageBindGroupLayout) {
-    const auto limits = GetSupportedLimits().limits;
+    const auto& limits = GetSupportedLimits();
     wgpu::BindGroupLayoutEntry entry;
     entry.visibility = wgpu::ShaderStage::Fragment;
     entry.buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
@@ -2049,7 +2182,7 @@ TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageBuffersInFragmentStageBi
 // Test that in compat we get an error if we use more than maxStorageBuffersInVertexStage
 // when it's lower than maxStorageBuffersPerShaderStage in createBindGroupLayout
 TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageBuffersInVertexStageBindGroupLayout) {
-    const auto limits = GetSupportedLimits().limits;
+    const auto& limits = GetSupportedLimits();
     wgpu::BindGroupLayoutEntry entry;
     entry.visibility = wgpu::ShaderStage::Vertex;
     entry.buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
@@ -2058,23 +2191,10 @@ TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageBuffersInVertexStageBind
                           "maxStorageBuffersInVertexStage");
 }
 
-// Test that in compat we get an error if we use more than maxStorageTexturesInFragmentStage
-// when it's lower than maxStorageTexturesPerShaderStage in createBindGroupLayout
-TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageTexturesInFragmentStageBindGroupLayout) {
-    const auto limits = GetSupportedLimits().limits;
-    wgpu::BindGroupLayoutEntry entry;
-    entry.visibility = wgpu::ShaderStage::Fragment;
-    entry.storageTexture.format = wgpu::TextureFormat::R32Float;
-    entry.storageTexture.access = wgpu::StorageTextureAccess::ReadOnly;
-    DoBindGroupLayoutTest(limits.maxStorageTexturesInFragmentStage,
-                          limits.maxStorageTexturesPerShaderStage, entry,
-                          "maxStorageTexturesInFragmentStage");
-}
-
 // Test that in compat we get an error if we use more than maxStorageTexturesInVertexStage
 // when it's lower than maxStorageTexturesPerShaderStage in createBindGroupLayout
 TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageTexturesInVertexStageBindGroupLayout) {
-    const auto limits = GetSupportedLimits().limits;
+    const auto& limits = GetSupportedLimits();
     wgpu::BindGroupLayoutEntry entry;
     entry.visibility = wgpu::ShaderStage::Vertex;
     entry.storageTexture.format = wgpu::TextureFormat::R32Float;
@@ -2087,7 +2207,7 @@ TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageTexturesInVertexStageBin
 // Test that in compat we get an error if we use more than maxStorageBuffersInFragmentStage
 // when it's lower than maxStorageBuffersPerShaderStage in createPipelineLayout
 TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageBuffersInFragmentStagePipelineLayout) {
-    const auto limits = GetSupportedLimits().limits;
+    const auto& limits = GetSupportedLimits();
     wgpu::BindGroupLayoutEntry entry;
     entry.visibility = wgpu::ShaderStage::Fragment;
     entry.buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
@@ -2099,7 +2219,7 @@ TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageBuffersInFragmentStagePi
 // Test that in compat we get an error if we use more than maxStorageBuffersInVertexStage
 // when it's lower than maxStorageBuffersPerShaderStage in createPipelineLayout
 TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageBuffersInVertexStagePipelineLayout) {
-    const auto limits = GetSupportedLimits().limits;
+    const auto& limits = GetSupportedLimits();
     wgpu::BindGroupLayoutEntry entry;
     entry.visibility = wgpu::ShaderStage::Vertex;
     entry.buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
@@ -2108,23 +2228,10 @@ TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageBuffersInVertexStagePipe
                          "maxStorageBuffersInVertexStage");
 }
 
-// Test that in compat we get an error if we use more than maxStorageTexturesInFragmentStage
-// when it's lower than maxStorageTexturesPerShaderStage in createPipelineLayout
-TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageTexturesInFragmentStagePipelineLayout) {
-    const auto limits = GetSupportedLimits().limits;
-    wgpu::BindGroupLayoutEntry entry;
-    entry.visibility = wgpu::ShaderStage::Fragment;
-    entry.storageTexture.format = wgpu::TextureFormat::R32Float;
-    entry.storageTexture.access = wgpu::StorageTextureAccess::ReadOnly;
-    DoPipelineLayoutTest(limits.maxStorageTexturesInFragmentStage,
-                         limits.maxStorageTexturesPerShaderStage, entry,
-                         "maxStorageTexturesInFragmentStage");
-}
-
 // Test that in compat we get an error if we use more than maxStorageTexturesInVertexStage
 // when it's lower than maxStorageTexturesPerShaderStage in createPipelineLayout
 TEST_F(CompatLayoutLimitsTests, CanNotPassLimitOfStorageTexturesInVertexStagePipelineLayout) {
-    const auto limits = GetSupportedLimits().limits;
+    const auto& limits = GetSupportedLimits();
     wgpu::BindGroupLayoutEntry entry;
     entry.visibility = wgpu::ShaderStage::Vertex;
     entry.storageTexture.format = wgpu::TextureFormat::R32Float;

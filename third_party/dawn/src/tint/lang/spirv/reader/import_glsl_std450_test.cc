@@ -658,7 +658,7 @@ TEST_F(SpirvReaderTest, Normalize_Vector4) {
 )");
 }
 
-TEST_F(SpirvReaderTest, DISABLED_RectifyOperandsAndResult_FindUMsb) {
+TEST_F(SpirvReaderTest, RectifyOperandsAndResult_FindUMsb) {
     // Check signedness conversion of arguments and results.
     //   SPIR-V signed arg -> cast arg to unsigned
     //      signed result -> cast result to signed
@@ -693,14 +693,23 @@ TEST_F(SpirvReaderTest, DISABLED_RectifyOperandsAndResult_FindUMsb) {
               R"(
 %main = @compute @workgroup_size(1u, 1u, 1u) func():void {
   $B1: {
-    let x_1 = bitcast<i32>(firstLeadingBit(bitcast<u32>(i1)));
-    let x_2 = bitcast<vec2i>(firstLeadingBit(bitcast<vec2u>(v2i1)));
-    let x_3 = firstLeadingBit(bitcast<u32>(i1));
-    let x_4 = firstLeadingBit(bitcast<vec2u>(v2i1));
-    let x_5 = bitcast<i32>(firstLeadingBit(u1));
-    let x_6 = bitcast<vec2i>(firstLeadingBit(v2u1));
-    let x_7 = firstLeadingBit(u1);
-    let x_8 = firstLeadingBit(v2u1);
+    %2:u32 = bitcast 30i
+    %3:u32 = firstLeadingBit %2
+    %4:i32 = bitcast %3
+    %5:vec2<u32> = bitcast vec2<i32>(30i, 40i)
+    %6:vec2<u32> = firstLeadingBit %5
+    %7:vec2<i32> = bitcast %6
+    %8:u32 = bitcast 30i
+    %9:u32 = firstLeadingBit %8
+    %10:vec2<u32> = bitcast vec2<i32>(30i, 40i)
+    %11:vec2<u32> = firstLeadingBit %10
+    %12:u32 = firstLeadingBit 10u
+    %13:i32 = bitcast %12
+    %14:vec2<u32> = firstLeadingBit vec2<u32>(10u, 20u)
+    %15:vec2<i32> = bitcast %14
+    %16:u32 = firstLeadingBit 10u
+    %17:vec2<u32> = firstLeadingBit vec2<u32>(10u, 20u)
+    ret
   }
 }
 )");
@@ -862,7 +871,7 @@ __modf_result_f32 = struct @align(4) {
 
 %main = @compute @workgroup_size(1u, 1u, 1u) func():void {
   $B1: {
-    %2:ptr<function, tint_symbol_2, read_write> = var
+    %2:ptr<function, tint_symbol_2, read_write> = var undef
     %3:__modf_result_f32 = modf 50.0f
     %4:f32 = access %3, 0u
     %5:f32 = access %3, 1u
@@ -957,7 +966,7 @@ __frexp_result_f32 = struct @align(4) {
 
 %main = @compute @workgroup_size(1u, 1u, 1u) func():void {
   $B1: {
-    %2:ptr<function, tint_symbol_2, read_write> = var
+    %2:ptr<function, tint_symbol_2, read_write> = var undef
     %3:__frexp_result_f32 = frexp 50.0f
     %4:f32 = access %3, 0u
     %5:i32 = access %3, 1u

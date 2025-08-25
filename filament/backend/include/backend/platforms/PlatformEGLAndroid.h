@@ -127,11 +127,15 @@ protected:
 protected:
     bool makeCurrent(ContextType type,
             SwapChain* drawSwapChain,
-            SwapChain* readSwapChain) noexcept override;
+            SwapChain* readSwapChain) override;
 
 private:
     struct InitializeJvmForPerformanceManagerIfNeeded {
         InitializeJvmForPerformanceManagerIfNeeded();
+    };
+
+    struct ExternalTextureAndroid : public ExternalTexture {
+        EGLImageKHR eglImage = EGL_NO_IMAGE;
     };
 
     int mOSVersion;

@@ -20,7 +20,18 @@
 
 #include "FilamentAPI-impl.h"
 
+#include <backend/DriverEnums.h>
+
+#include <filament/BufferObject.h>
+
 #include <utils/CString.h>
+#include <utils/Panic.h>
+#include <utils/StaticString.h>
+
+#include <utility>
+
+#include <stdint.h>
+#include <stddef.h>
 
 namespace filament {
 
@@ -51,6 +62,10 @@ BufferObject::Builder& BufferObject::Builder::name(const char* name, size_t cons
     return BuilderNameMixin::name(name, len);
 }
 
+BufferObject::Builder& BufferObject::Builder::name(utils::StaticString const& name) noexcept {
+    return BuilderNameMixin::name(name);
+}
+
 BufferObject* BufferObject::Builder::build(Engine& engine) {
     return downcast(engine).createBufferObject(*this);
 }
@@ -73,6 +88,10 @@ void FBufferObject::terminate(FEngine& engine) {
 }
 
 void FBufferObject::setBuffer(FEngine& engine, BufferDescriptor&& buffer, uint32_t const byteOffset) {
+
+    FILAMENT_CHECK_PRECONDITION((byteOffset & 0x3) == 0)
+            << "byteOffset must be a multiple of 4";
+
     engine.getDriverApi().updateBufferObject(mHandle, std::move(buffer), byteOffset);
 }
 

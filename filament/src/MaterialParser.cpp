@@ -363,6 +363,10 @@ bool MaterialParser::getStereoscopicType(StereoscopicType* value) const noexcept
     return mImpl.getFromSimpleChunk(MaterialStereoscopicType, reinterpret_cast<uint8_t*>(value));
 }
 
+bool MaterialParser::getMaterialCrc32(uint32_t* value) const noexcept {
+    return mImpl.getFromSimpleChunk(MaterialCrc32, value);
+}
+
 bool MaterialParser::getRequiredAttributes(AttributeBitset* value) const noexcept {
     uint32_t rawAttributes = 0;
     if (!mImpl.getFromSimpleChunk(MaterialRequiredAttributes, &rawAttributes)) {
@@ -481,6 +485,7 @@ bool ChunkSamplerInterfaceBlock::unflatten(Unflattener& unflattener,
         uint8_t fieldType = 0;
         uint8_t fieldFormat = 0;
         uint8_t fieldPrecision = 0;
+        bool fieldFilterable = false;
         bool fieldMultisample = false;
 
         if (!unflattener.read(&fieldName)) {
@@ -503,6 +508,10 @@ bool ChunkSamplerInterfaceBlock::unflatten(Unflattener& unflattener,
             return false;
         }
 
+        if (!unflattener.read(&fieldFilterable)) {
+            return false;
+        }
+
         if (!unflattener.read(&fieldMultisample)) {
             return false;
         }
@@ -512,6 +521,7 @@ bool ChunkSamplerInterfaceBlock::unflatten(Unflattener& unflattener,
                 SamplerInterfaceBlock::Type(fieldType),
                 SamplerInterfaceBlock::Format(fieldFormat),
                 SamplerInterfaceBlock::Precision(fieldPrecision),
+                fieldFilterable,
                 fieldMultisample);
     }
 
@@ -648,44 +658,32 @@ bool ChunkAttributeInfo::unflatten(Unflattener& unflattener,
 bool ChunkDescriptorBindingsInfo::unflatten(Unflattener& unflattener,
         MaterialParser::DescriptorBindingsContainer* container) {
 
-    uint8_t setCount;
-    if (!unflattener.read(&setCount)) {
+    static_assert(sizeof(DescriptorSetBindingPoints) == sizeof(uint8_t));
+
+    uint8_t descriptorCount;
+    if (!unflattener.read(&descriptorCount)) {
         return false;
     }
 
-    for (size_t j = 0; j < setCount; j++) {
-        static_assert(sizeof(DescriptorSetBindingPoints) == sizeof(uint8_t));
-
-        DescriptorSetBindingPoints set;
-        if (!unflattener.read(reinterpret_cast<uint8_t*>(&set))) {
+    auto& descriptors = (*container)[+DescriptorSetBindingPoints::PER_MATERIAL];
+    descriptors.reserve(descriptorCount);
+    for (size_t i = 0; i < descriptorCount; i++) {
+        CString name;
+        if (!unflattener.read(&name)) {
             return false;
         }
-
-        uint8_t descriptorCount;
-        if (!unflattener.read(&descriptorCount)) {
+        uint8_t type;
+        if (!unflattener.read(&type)) {
             return false;
         }
-
-        auto& descriptors = (*container)[+set];
-        descriptors.reserve(descriptorCount);
-        for (size_t i = 0; i < descriptorCount; i++) {
-            CString name;
-            if (!unflattener.read(&name)) {
-                return false;
-            }
-            uint8_t type;
-            if (!unflattener.read(&type)) {
-                return false;
-            }
-            uint8_t binding;
-            if (!unflattener.read(&binding)) {
-                return false;
-            }
-            descriptors.push_back({
-                    std::move(name),
-                    DescriptorType(type),
-                    descriptor_binding_t(binding)});
+        uint8_t binding;
+        if (!unflattener.read(&binding)) {
+            return false;
         }
+        descriptors.push_back({
+                std::move(name),
+                DescriptorType(type),
+                descriptor_binding_t(binding)});
     }
 
     return true;
@@ -693,42 +691,40 @@ bool ChunkDescriptorBindingsInfo::unflatten(Unflattener& unflattener,
 
 bool ChunkDescriptorSetLayoutInfo::unflatten(Unflattener& unflattener,
         MaterialParser::DescriptorSetLayoutContainer* container) {
-    for (size_t j = 0; j < 2; j++) {
-        uint8_t descriptorCount;
-        if (!unflattener.read(&descriptorCount)) {
+    uint8_t descriptorCount;
+    if (!unflattener.read(&descriptorCount)) {
+        return false;
+    }
+    auto& descriptors = container->bindings;
+    descriptors.reserve(descriptorCount);
+    for (size_t i = 0; i < descriptorCount; i++) {
+        uint8_t type;
+        if (!unflattener.read(&type)) {
             return false;
         }
-        auto& descriptors = (*container)[j].bindings;
-        descriptors.reserve(descriptorCount);
-        for (size_t i = 0; i < descriptorCount; i++) {
-            uint8_t type;
-            if (!unflattener.read(&type)) {
-                return false;
-            }
-            uint8_t stageFlags;
-            if (!unflattener.read(&stageFlags)) {
-                return false;
-            }
-            uint8_t binding;
-            if (!unflattener.read(&binding)) {
-                return false;
-            }
-            uint8_t flags;
-            if (!unflattener.read(&flags)) {
-                return false;
-            }
-            uint16_t count;
-            if (!unflattener.read(&count)) {
-                return false;
-            }
-            descriptors.push_back({
-                    DescriptorType(type),
-                    ShaderStageFlags(stageFlags),
-                    descriptor_binding_t(binding),
-                    DescriptorFlags(flags),
-                    count,
-            });
+        uint8_t stageFlags;
+        if (!unflattener.read(&stageFlags)) {
+            return false;
         }
+        uint8_t binding;
+        if (!unflattener.read(&binding)) {
+            return false;
+        }
+        uint8_t flags;
+        if (!unflattener.read(&flags)) {
+            return false;
+        }
+        uint16_t count;
+        if (!unflattener.read(&count)) {
+            return false;
+        }
+        descriptors.push_back({
+            DescriptorType(type),
+            ShaderStageFlags(stageFlags),
+            descriptor_binding_t(binding),
+            DescriptorFlags(flags),
+            count,
+        });
     }
     return true;
 }

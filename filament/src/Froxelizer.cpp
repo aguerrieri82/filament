@@ -30,11 +30,12 @@
 
 #include <backend/DriverEnums.h>
 
+#include <private/utils/Tracing.h>
+
 #include <utils/BinaryTreeArray.h>
 #include <utils/JobSystem.h>
-#include <utils/Log.h>
+#include <utils/Logger.h>
 #include <utils/Slice.h>
-#include <utils/Systrace.h>
 #include <utils/compiler.h>
 #include <utils/debug.h>
 
@@ -123,6 +124,20 @@ size_t Froxelizer::getFroxelBufferByteCount(FEngine::DriverApi& driverApi) noexc
     return std::min(FROXEL_BUFFER_MAX_ENTRY_COUNT * sizeof(FroxelEntry), targetSize);
 }
 
+View::FroxelConfigurationInfo Froxelizer::getFroxelConfigurationInfo() const noexcept {
+    return { uint8_t(getFroxelCountX()),
+             uint8_t(getFroxelCountY()),
+             uint8_t(getFroxelCountZ()),
+             mViewport.width,
+             mViewport.height,
+             mFroxelDimension,
+             mZLightFar,
+             mLinearizer[0],
+             mProjection,
+             mClipTransform
+    };
+}
+
 Froxelizer::Froxelizer(FEngine& engine)
         : mArena("froxel", PER_FROXELDATA_ARENA_SIZE),
           mZLightNear(FROXEL_FIRST_SLICE_DEPTH),
@@ -197,9 +212,13 @@ void Froxelizer::setProjection(const mat4f& projection,
 bool Froxelizer::prepare(
         FEngine::DriverApi& driverApi, RootArenaScope& rootArenaScope,
         filament::Viewport const& viewport,
-        const mat4f& projection, float const projectionNear, float const projectionFar) noexcept {
+        const mat4f& projection, float const projectionNear, float const projectionFar,
+        float4 const& clipTransform) noexcept {
     setViewport(viewport);
     setProjection(projection, projectionNear, projectionFar);
+
+    // Only for debugging
+    mClipTransform = clipTransform;
 
     bool uniformsNeedUpdating = false;
     if (UTILS_UNLIKELY(mDirtyFlags)) {
@@ -296,7 +315,7 @@ void Froxelizer::updateBoundingSpheres(
         float4 const* UTILS_RESTRICT planesY,
         float const* UTILS_RESTRICT planesZ) noexcept {
 
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
     // TODO: this could potentially be parallel_for'ized
 
@@ -360,19 +379,19 @@ bool Froxelizer::update() noexcept {
                 getFroxelBufferEntryCount(), viewport);
 
         mFroxelDimension = froxelDimension;
-        mClipToFroxelX = (0.5f * float(viewport.width))  / float(froxelDimension.x);
-        mClipToFroxelY = (0.5f * float(viewport.height)) / float(froxelDimension.y);
+        // note: because froxelDimension is a power-of-two and viewport is an integer, mClipFroxel
+        // is an exact value (which is not true for 1/mClipToFroxelX, btw)
+        mClipToFroxelX = float(viewport.width)  / float(2 * froxelDimension.x);
+        mClipToFroxelY = float(viewport.height) / float(2 * froxelDimension.y);
 
         uniformsNeedUpdating = true;
 
-#ifndef NDEBUG
-        slog.d << "Froxel: " << viewport.width << "x" << viewport.height << " / "
-               << froxelDimension.x << "x" << froxelDimension.y << io::endl
-               << "Froxel: " << froxelCountX << "x" << froxelCountY << "x" << froxelCountZ
-               << " = " << (froxelCountX * froxelCountY * froxelCountZ)
-               << " (" << getFroxelBufferEntryCount() - froxelCountX * froxelCountY * froxelCountZ << " lost)"
-               << io::endl;
-#endif
+        DLOG(INFO) << "Froxel: " << viewport.width << "x" << viewport.height << " / "
+                   << froxelDimension.x << "x" << froxelDimension.y << io::endl
+                   << "Froxel: " << froxelCountX << "x" << froxelCountY << "x" << froxelCountZ
+                   << " = " << (froxelCountX * froxelCountY * froxelCountZ) << " ("
+                   << getFroxelBufferEntryCount() - froxelCountX * froxelCountY * froxelCountZ
+                   << " lost)";
 
         mFroxelCountX = froxelCountX;
         mFroxelCountY = froxelCountY;
@@ -409,8 +428,7 @@ bool Froxelizer::update() noexcept {
         }
 
         // for the inverse-transformation (view-space z to z-slice)
-        mLinearizer = 1.0f / linearizer;
-        mZLightFar = zLightFar;
+        mLinearizer = { linearizer, 1.0f / linearizer };
 
         mParamsZ[0] = 0; // updated when camera changes
         mParamsZ[1] = 0; // updated when camera changes
@@ -467,7 +485,7 @@ bool Froxelizer::update() noexcept {
             // ==> i = log2(z_screen * (far/near)) * (-1/linearizer) + zcount
             mParamsZ[0] = mZLightFar / Pw;
             mParamsZ[1] = 0.0f;
-            mParamsZ[2] = -mLinearizer;
+            mParamsZ[2] = -mLinearizer[1];
         } else {
             // orthographic projection
             // z_view = (1 - z_screen) * (near - far) - near
@@ -477,7 +495,7 @@ bool Froxelizer::update() noexcept {
             //   Pw = far / (far - near)
             mParamsZ[0] = -1.0f / (Pz * mZLightFar);  // -(far-near) / mZLightFar
             mParamsZ[1] =    Pw / (Pz * mZLightFar);  //         far / mZLightFar
-            mParamsZ[2] = mLinearizer;
+            mParamsZ[2] = mLinearizer[1];
         }
         uniformsNeedUpdating = true;
     }
@@ -508,7 +526,7 @@ size_t Froxelizer::findSliceZ(float const z) const noexcept {
 
     // This whole function is now branch-less.
 
-    int s = int( fast::log2(-z / mZLightFar) * mLinearizer + float(mFroxelCountZ) );
+    int s = int( fast::log2(-z / mZLightFar) * mLinearizer[1] + float(mFroxelCountZ) );
 
     // there are cases where z can be negative here, e.g.:
     // - the light is visible, but its center is behind the camera
@@ -579,7 +597,7 @@ void Froxelizer::froxelizeLights(FEngine& engine,
 void Froxelizer::froxelizeLoop(FEngine& engine,
         const mat4f& UTILS_RESTRICT viewMatrix,
         const FScene::LightSoa& UTILS_RESTRICT lightData) noexcept {
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
     Slice<FroxelThreadData> froxelThreadData = mFroxelShardedData;
     memset(froxelThreadData.data(), 0, froxelThreadData.sizeInBytes());
@@ -593,7 +611,7 @@ void Froxelizer::froxelizeLoop(FEngine& engine,
                      spheres, directions, instances, &viewMatrix, &lcm ]
             (size_t const count, size_t const offset, size_t const stride) {
 
-        SYSTRACE_NAME("FroxelizeLoop Job");
+        FILAMENT_TRACING_NAME(FILAMENT_TRACING_CATEGORY_FILAMENT, "FroxelizeLoop Job");
 
         const mat4f& projection = mProjection;
         const mat3f& vn = viewMatrix.upperLeft();
@@ -646,8 +664,7 @@ void Froxelizer::froxelizeLoop(FEngine& engine,
 }
 
 void Froxelizer::froxelizeAssignRecordsCompress() noexcept {
-
-    SYSTRACE_CALL();
+    FILAMENT_TRACING_CALL(FILAMENT_TRACING_CATEGORY_FILAMENT);
 
     Slice<FroxelThreadData> const froxelThreadData = mFroxelShardedData;
 
@@ -712,9 +729,7 @@ void Froxelizer::froxelizeAssignRecordsCompress() noexcept {
         const size_t lightCount = entry.count();
 
         if (UTILS_UNLIKELY(offset + lightCount >= RECORD_BUFFER_ENTRY_COUNT)) {
-#ifndef NDEBUG
-            slog.d << "out of space: " << i << ", at " << offset << io::endl;
-#endif
+            // DLOG(INFO) << "out of space: " << i << ", at " << offset;
             // note: instead of dropping froxels we could look for similar records we've already
             // filed up.
             do {
@@ -733,7 +748,7 @@ void Froxelizer::froxelizeAssignRecordsCompress() noexcept {
             const size_t word = l / LIGHT_PER_GROUP;
             const size_t bit  = l % LIGHT_PER_GROUP;
             l = (bit * GROUP_COUNT) | (word % GROUP_COUNT);
-            *point = (RecordBufferType)l;
+            *point = RecordBufferType(l);
             // we need to "cancel" the write operation if we have more than 255 spot or point lights
             // (this is a limitation of the data type used to store the light counts per froxel)
             point += (point - beginPoint < 255) ? 1 : 0;

@@ -16,20 +16,28 @@
 
 #include "BackendTest.h"
 
+#include "Lifetimes.h"
+#include "Skip.h"
+
 using namespace filament;
 using namespace filament::backend;
 
 namespace test {
 
 TEST_F(BackendTest, FrameScheduledCallback) {
+    SKIP_IF(Backend::OPENGL, "Frame callbacks are unsupported in OpenGL");
+    SKIP_IF(Backend::VULKAN, "Frame callbacks are unsupported in Vulkan, see b/417254479");
+    SKIP_IF(Backend::WEBGPU, "Frame callbacks are unsupported in WebGPU");
+
     auto& api = getDriverApi();
+    Cleanup cleanup(api);
 
     // Create a SwapChain.
     // In order for the frameScheduledCallback to be called, this must be a real SwapChain (not
     // headless) so we obtain a drawable.
-    auto swapChain = createSwapChain();
+    auto swapChain = cleanup.add(createSwapChain());
 
-    Handle<HwRenderTarget> renderTarget = api.createDefaultRenderTarget();
+    Handle<HwRenderTarget> renderTarget = cleanup.add(api.createDefaultRenderTarget());
 
     int callbackCountA = 0;
     api.setFrameScheduledCallback(swapChain, nullptr, [&callbackCountA](PresentCallable callable) {
@@ -78,10 +86,15 @@ TEST_F(BackendTest, FrameScheduledCallback) {
 }
 
 TEST_F(BackendTest, FrameCompletedCallback) {
+    SKIP_IF(Backend::OPENGL, "Frame callbacks are unsupported in OpenGL");
+    SKIP_IF(Backend::VULKAN, "Frame callbacks are unsupported in Vulkan, see b/417254479");
+    SKIP_IF(Backend::WEBGPU, "Frame callbacks are unsupported in WebGPU");
+
     auto& api = getDriverApi();
+    Cleanup cleanup(api);
 
     // Create a SwapChain.
-    auto swapChain = api.createSwapChainHeadless(256, 256, 0);
+    auto swapChain = cleanup.add(api.createSwapChainHeadless(256, 256, 0));
 
     int callbackCountA = 0;
     api.setFrameCompletedCallback(swapChain, nullptr,

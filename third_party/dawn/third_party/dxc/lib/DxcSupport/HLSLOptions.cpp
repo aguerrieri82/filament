@@ -1033,20 +1033,6 @@ int ReadDxcOpts(const OptTable *optionTable, unsigned flagsToInclude,
     opts.ValVerMinor = (unsigned long)minor64;
   }
 
-  llvm::StringRef valSelectStr = Args.getLastArgValue(OPT_select_validator);
-  if (!valSelectStr.empty()) {
-    opts.SelectValidator = llvm::StringSwitch<ValidatorSelection>(valSelectStr)
-                               .Case("auto", ValidatorSelection::Auto)
-                               .Case("internal", ValidatorSelection::Internal)
-                               .Case("external", ValidatorSelection::External)
-                               .Default(ValidatorSelection::Invalid);
-    if (opts.SelectValidator == ValidatorSelection::Invalid) {
-      errors << "Unsupported value '" << valSelectStr
-             << "for -select-validator option.";
-      return 1;
-    }
-  }
-
   if (opts.IsLibraryProfile() && Minor == 0xF) {
     if (opts.ValVerMajor != UINT_MAX && opts.ValVerMajor != 0) {
       errors << "Offline library profile cannot be used with non-zero "
@@ -1088,6 +1074,8 @@ int ReadDxcOpts(const OptTable *optionTable, unsigned flagsToInclude,
   }
 
   addDiagnosticArgs(Args, OPT_W_Group, OPT_W_value_Group, opts.Warnings);
+
+  opts.GenMetal = Args.hasFlag(OPT_metal, OPT_INVALID, false);
 
   // SPIRV Change Starts
 #ifdef ENABLE_SPIRV_CODEGEN
@@ -1132,6 +1120,8 @@ int ReadDxcOpts(const OptTable *optionTable, unsigned flagsToInclude,
       Args.hasFlag(OPT_fspv_enable_maximal_reconvergence, OPT_INVALID, false);
   opts.SpirvOptions.useVulkanMemoryModel =
       Args.hasFlag(OPT_fspv_use_vulkan_memory_model, OPT_INVALID, false);
+  opts.SpirvOptions.useUnknownImageFormat =
+      Args.hasFlag(OPT_fspv_use_unknown_image_format, OPT_INVALID, false);
 
   if (!handleVkShiftArgs(Args, OPT_fvk_b_shift, "b", &opts.SpirvOptions.bShift,
                          errors) ||
@@ -1312,6 +1302,21 @@ int ReadDxcOpts(const OptTable *optionTable, unsigned flagsToInclude,
   }
 #endif // ENABLE_SPIRV_CODEGEN
   // SPIRV Change Ends
+
+#ifndef ENABLE_METAL_CODEGEN
+  if (opts.GenMetal) {
+    errors << "Metal CodeGen not available. "
+              "Please rebuild with Metal IR Converter installed.";
+    return 1;
+  }
+#endif
+
+  if (opts.GenMetal) {
+    if (!opts.AssemblyCode.empty() || opts.OutputObject.empty()) {
+      errors << "Disassembly of Metal IR not supported (yet).";
+      return 1;
+    }
+  }
 
   // Validation for DebugInfo here because spirv uses same DebugInfo opt,
   // and legacy wrappers will add EmbedDebug in this case, leading to this

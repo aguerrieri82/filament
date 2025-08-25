@@ -824,6 +824,12 @@ void ViewerGui::updateUserInterface() {
     if (ImGui::CollapsingHeader("SSAO Options")) {
         auto& ssao = mSettings.view.ssao;
 
+        ImGui::Checkbox("Enabled", &ssao.enabled);
+
+        int ambienOcclusionType = (int)ssao.aoType;
+        ImGui::Combo("AO Type", &ambienOcclusionType, "SAO\0GTAO\0\0");
+        ssao.aoType = (decltype(ssao.aoType))ambienOcclusionType;
+
         int quality = (int) ssao.quality;
         int lowpass = (int) ssao.lowPassFilter;
         bool upsampling = ssao.upsampling != View::QualityLevel::LOW;
@@ -833,7 +839,28 @@ void ViewerGui::updateUserInterface() {
         ImGui::SliderInt("Low Pass", &lowpass, 0, 2);
         ImGui::Checkbox("Bent Normals", &ssao.bentNormals);
         ImGui::Checkbox("High quality upsampling", &upsampling);
-        ImGui::SliderFloat("Min Horizon angle", &ssao.minHorizonAngleRad, 0.0f, (float)M_PI_4);
+        ImGui::SliderFloat("Radius", &ssao.radius, 0.1f, 10.0f);
+        ImGui::SliderFloat("Power", &ssao.power, 1.0f, 8.0f);
+
+        switch (ssao.aoType) {
+            case AmbientOcclusionOptions::AmbientOcclusionType::SAO: {
+                ImGui::SliderFloat("Min Horizon angle", &ssao.minHorizonAngleRad, 0.0f,
+                        (float) M_PI_4);
+                break;
+            }
+            case AmbientOcclusionOptions::AmbientOcclusionType::GTAO: {
+                int sliceCount = ssao.gtao.sampleSliceCount;
+                int stepsPerSlice = ssao.gtao.sampleStepsPerSlice;
+
+                ImGui::SliderInt("Slice Count", &sliceCount, 1, 10);
+                ImGui::SliderInt("Steps Per Slice", &stepsPerSlice, 1, 4);
+
+                ssao.gtao.sampleSliceCount = static_cast<uint8_t>(sliceCount);
+                ssao.gtao.sampleStepsPerSlice = static_cast<uint8_t>(stepsPerSlice);
+                break;
+            }
+        }
+
         ImGui::SliderFloat("Bilateral Threshold", &ssao.bilateralThreshold, 0.0f, 0.1f);
         ImGui::Checkbox("Half resolution", &halfRes);
         ssao.resolution = halfRes ? 0.5f : 1.0f;
@@ -1106,15 +1133,15 @@ void ViewerGui::updateUserInterface() {
                 debug.getPropertyAddress<bool>("d.stereo.combine_multiview_images"));
         ImGui::Unindent();
 #endif
-#endif
-        ImGui::SliderFloat("Ocular distance", &mSettings.viewer.cameraEyeOcularDistance, 0.0f,
-                1.0f);
+        ImGui::SliderFloat("Ocular distance",
+            &mSettings.viewer.cameraEyeOcularDistance, 0.0f, 1.0f);
 
         float toeInDegrees = mSettings.viewer.cameraEyeToeIn / f::PI * 180.0f;
         ImGui::SliderFloat("Toe in", &toeInDegrees, 0.0f, 30.0, "%.3f°");
         mSettings.viewer.cameraEyeToeIn = toeInDegrees / 180.0f * f::PI;
 
         ImGui::Unindent();
+#endif
     }
 
     colorGradingUI(mSettings, mRangePlot, mCurvePlot, mToneMapPlot);

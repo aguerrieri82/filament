@@ -40,9 +40,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HandleAllocatorGL  HandleAllocator<32,  96, 184>    // ~4520 / pool / MiB
-#define HandleAllocatorVK  HandleAllocator<64, 160, 312>    // ~1820 / pool / MiB
-#define HandleAllocatorMTL HandleAllocator<32,  64, 552>    // ~1660 / pool / MiB
+#define HandleAllocatorGL   HandleAllocator<32,  96, 184>    // ~4520 / pool / MiB
+#define HandleAllocatorVK   HandleAllocator<64, 160, 312>    // ~1820 / pool / MiB
+#define HandleAllocatorMTL  HandleAllocator<32,  64, 552>    // ~1660 / pool / MiB
+// TODO WebGPU examine right size of handles
+#define HandleAllocatorWGPU HandleAllocator<64, 160, 552>    // ~1820 / pool / MiB
 
 namespace filament::backend {
 
@@ -114,7 +116,7 @@ public:
      * Destroys the object D at Handle<B> and construct a new D in its place
      * e.g.:
      *  Handle<ConcreteTexture> h = allocateAndConstruct(w, h);
-     *  ConcreteTexture* p = reconstruct(h, w, h);
+     *  ConcreteTexture* p = destroyAndConstruct(h, w, h);
      */
     template<typename D, typename B, typename ... ARGS>
     std::enable_if_t<std::is_base_of_v<B, D>, D>*
@@ -202,7 +204,7 @@ public:
         } else {
             // check for heap handle use-after-free
             if (UTILS_UNLIKELY(!mUseAfterFreeCheckDisabled)) {
-                uint8_t const index = (handle.getId() & HANDLE_INDEX_MASK);
+                HandleBase::HandleId const index = (handle.getId() & HANDLE_INDEX_MASK);
                 // if we've already handed out this handle index before, it's definitely a
                 // use-after-free, otherwise it's probably just a corrupted handle
                 if (index < mId) {

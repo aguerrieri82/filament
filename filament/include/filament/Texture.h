@@ -26,6 +26,7 @@
 #include <backend/Platform.h>
 
 #include <utils/compiler.h>
+#include <utils/StaticString.h>
 
 #include <utility>
 
@@ -94,6 +95,9 @@ public:
     /** @return Whether a backend supports mipmapping of a particular format. */
     static bool isTextureFormatMipmappable(Engine& engine, InternalFormat format) noexcept;
 
+    /** @return Whether particular format is compressed */
+    static bool isTextureFormatCompressed(InternalFormat format) noexcept;
+
     /** @return Whether this backend supports protected textures. */
     static bool isProtectedTexturesSupported(Engine& engine) noexcept;
 
@@ -112,19 +116,6 @@ public:
 
     /** @return the maximum number of layers supported by texture arrays. At least 256. */
     static size_t getMaxArrayTextureLayers(Engine& engine) noexcept;
-
-    /**
-     * Options for environment prefiltering into reflection map
-     *
-     * @see generatePrefilterMipmap()
-     */
-    struct PrefilterOptions {
-        uint16_t sampleCount = 8;   //!< sample count used for filtering
-        bool mirror = true;         //!< whether the environment must be mirrored
-    private:
-        UTILS_UNUSED uintptr_t reserved[3] = {};
-    };
-
 
     //! Use Builder to construct a Texture object instance
     class Builder : public BuilderBase<BuilderDetails>, public BuilderNameMixin<Builder> {
@@ -170,6 +161,20 @@ public:
          * @return This Builder, for chaining calls.
          */
         Builder& levels(uint8_t levels) noexcept;
+
+        /**
+         * Specifies the numbers of samples used for MSAA (Multisample Anti-Aliasing).
+         *
+         * Calling this method implicitly indicates the texture is used as a render target. Hence,
+         * this method should not be used in conjunction with other methods that are semantically
+         * conflicting like `setImage`.
+         *
+         * If this is invoked for array textures, it means this texture is used for multiview.
+         *
+         * @param samples Number of samples for this texture.
+         * @return This Builder, for chaining calls.
+         */
+        Builder& samples(uint8_t samples) noexcept;
 
         /**
          * Specifies the type of sampler to use.
@@ -229,8 +234,20 @@ public:
          * @param name A string to identify this Texture
          * @param len Length of name, should be less than or equal to 128
          * @return This Builder, for chaining calls.
+         * @deprecated Use name(utils::StaticString const&) instead.
          */
-         Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+        UTILS_DEPRECATED
+        Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+
+        /**
+         * Associate an optional name with this Texture for debugging purposes.
+         *
+         * name will show in error messages and should be kept as short as possible.
+         *
+         * @param name A string literal to identify this Texture
+         * @return This Builder, for chaining calls.
+         */
+        Builder& name(utils::StaticString const& name) noexcept;
 
         /**
          * Creates an external texture. The content must be set using setExternalImage().
@@ -529,45 +546,6 @@ public:
      * @attention This Texture instance must NOT use SamplerType::SAMPLER_3D or it has no effect
      */
     void generateMipmaps(Engine& engine) const noexcept;
-
-    /**
-     * Creates a reflection map from an environment map.
-     *
-     * This is a utility function that replaces calls to Texture::setImage().
-     * The provided environment map is processed and all mipmap levels are populated. The
-     * processing is similar to the offline tool `cmgen` as a lower quality setting.
-     *
-     * This function is intended to be used when the environment cannot be processed offline,
-     * for instance if it's generated at runtime.
-     *
-     * The source data must obey to some constraints:
-     *   - the data type must be PixelDataFormat::RGB
-     *   - the data format must be one of
-     *          - PixelDataType::FLOAT
-     *          - PixelDataType::HALF
-     *
-     * The current texture must be a cubemap
-     *
-     * The reflections cubemap's internal format cannot be a compressed format.
-     *
-     * The reflections cubemap's dimension must be a power-of-two.
-     *
-     * @warning This operation is computationally intensive, especially with large environments and
-     *          is currently synchronous. Expect about 1ms for a 16x16 cubemap.
-     *
-     * @param engine        Reference to the filament::Engine to associate this IndirectLight with.
-     * @param buffer        Client-side buffer containing the images to set.
-     * @param faceOffsets   Offsets in bytes into \p buffer for all six images. The offsets
-     *                      are specified in the following order: +x, -x, +y, -y, +z, -z
-     * @param options       Optional parameter controlling user-specified quality and options.
-     *
-     * @exception utils::PreConditionPanic If the source data constraints are not respected.
-     *
-     */
-    void generatePrefilterMipmap(Engine& engine,
-            PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets,
-            PrefilterOptions const* UTILS_NULLABLE options = nullptr);
-
 
     /** @deprecated */
     struct FaceOffsets {

@@ -215,7 +215,7 @@ TEST_P(SurfaceConfigurationValidationTests, AnyCombinationOfCapabilities) {
                     // Check that we can present
                     wgpu::SurfaceTexture surfaceTexture;
                     surface.GetCurrentTexture(&surfaceTexture);
-                    surface.Present();
+                    ASSERT_EQ(wgpu::Status::Success, surface.Present());
                 }
                 device.Tick();
             }
@@ -267,35 +267,28 @@ TEST_P(SurfaceConfigurationValidationTests, ZeroHeight) {
 // A width that exceeds the maximum texture size fails
 TEST_P(SurfaceConfigurationValidationTests, ExcessiveWidth) {
     wgpu::Surface surface = CreateTestSurface();
-    wgpu::SupportedLimits supported;
+    wgpu::Limits supported;
     device.GetLimits(&supported);
 
     wgpu::SurfaceConfiguration config = GetPreferredConfiguration(surface);
-    config.width = supported.limits.maxTextureDimension1D + 1;
+    config.width = supported.maxTextureDimension1D + 1;
     ASSERT_DEVICE_ERROR(surface.Configure(&config));
 }
 
 // A height that exceeds the maximum texture size fails
 TEST_P(SurfaceConfigurationValidationTests, ExcessiveHeight) {
     wgpu::Surface surface = CreateTestSurface();
-    wgpu::SupportedLimits supported;
+    wgpu::Limits supported;
     device.GetLimits(&supported);
 
     wgpu::SurfaceConfiguration config = GetPreferredConfiguration(surface);
-    config.height = supported.limits.maxTextureDimension2D + 1;
+    config.height = supported.maxTextureDimension2D + 1;
     ASSERT_DEVICE_ERROR(surface.Configure(&config));
 }
 
-// A surface that was not configured must not be unconfigured
-TEST_P(SurfaceConfigurationValidationTests, UnconfigureNonConfiguredSurfaceFails) {
-    // TODO(dawn:2320): With SwiftShader, this throws a device error anyways (maybe because
-    // mInstance->ConsumedError calls the device error callback?). We should have a
-    // ASSERT_INSTANCE_ERROR to fully fix this test case.
-    DAWN_SUPPRESS_TEST_IF(IsSwiftshader());
-
-    // TODO(dawn:2320): This cannot throw a device error since the surface is
-    // not aware of the device at this stage.
-    /*ASSERT_DEVICE_ERROR(*/ CreateTestSurface().Unconfigure() /*)*/;
+// It's valid to unconfigure an already-unconfigured surface.
+TEST_P(SurfaceConfigurationValidationTests, UnconfigureNonConfiguredSurface) {
+    CreateTestSurface().Unconfigure();
 }
 
 // Test that including unsupported usage flag will result in error.

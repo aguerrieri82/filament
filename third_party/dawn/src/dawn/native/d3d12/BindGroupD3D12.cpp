@@ -29,7 +29,6 @@
 
 #include <utility>
 
-#include "dawn/common/BitSetIterator.h"
 #include "dawn/common/MatchVariant.h"
 #include "dawn/common/Range.h"
 #include "dawn/native/ExternalTexture.h"
@@ -52,15 +51,18 @@ ResultOrError<Ref<BindGroup>> BindGroup::Create(Device* device,
 
 BindGroup::BindGroup(Device* device,
                      const BindGroupDescriptor* descriptor,
-                     uint32_t viewSizeIncrement,
                      const CPUDescriptorHeapAllocation& viewAllocation)
-    : BindGroupBase(this, device, descriptor) {
+    : BindGroupBase(this, device, descriptor), mCPUViewAllocation(viewAllocation) {}
+
+BindGroup::~BindGroup() = default;
+
+MaybeError BindGroup::InitializeImpl() {
     BindGroupLayout* bgl = ToBackend(GetLayout());
 
-    mCPUViewAllocation = viewAllocation;
-
     const auto& descriptorHeapOffsets = bgl->GetDescriptorHeapOffsets();
+    uint32_t viewSizeIncrement = bgl->GetViewSizeIncrement();
 
+    Device* device = ToBackend(GetDevice());
     ID3D12Device* d3d12Device = device->GetD3D12Device();
 
     // It's not necessary to create descriptors in the descriptor heap for dynamic resources.
@@ -93,8 +95,8 @@ BindGroup::BindGroup(Device* device,
                         desc.BufferLocation = ToBackend(binding.buffer)->GetVA() + binding.offset;
 
                         d3d12Device->CreateConstantBufferView(
-                            &desc, viewAllocation.OffsetFrom(viewSizeIncrement,
-                                                             descriptorHeapOffsets[bindingIndex]));
+                            &desc, mCPUViewAllocation.OffsetFrom(
+                                       viewSizeIncrement, descriptorHeapOffsets[bindingIndex]));
                         break;
                     }
                     case wgpu::BufferBindingType::Storage:
@@ -107,7 +109,7 @@ BindGroup::BindGroup(Device* device,
                         // byte aligned. Since binding.size and binding.offset are in bytes,
                         // we need to divide by 4 to obtain the element size.
                         D3D12_UNORDERED_ACCESS_VIEW_DESC desc;
-                        desc.Buffer.NumElements = binding.size / 4;
+                        desc.Buffer.NumElements = static_cast<uint32_t>(binding.size / 4);
                         desc.Format = DXGI_FORMAT_R32_TYPELESS;
                         desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
                         desc.Buffer.FirstElement = binding.offset / 4;
@@ -117,11 +119,12 @@ BindGroup::BindGroup(Device* device,
 
                         d3d12Device->CreateUnorderedAccessView(
                             resource, nullptr, &desc,
-                            viewAllocation.OffsetFrom(viewSizeIncrement,
-                                                      descriptorHeapOffsets[bindingIndex]));
+                            mCPUViewAllocation.OffsetFrom(viewSizeIncrement,
+                                                          descriptorHeapOffsets[bindingIndex]));
                         break;
                     }
-                    case wgpu::BufferBindingType::ReadOnlyStorage: {
+                    case wgpu::BufferBindingType::ReadOnlyStorage:
+                    case kInternalReadOnlyStorageBufferBinding: {
                         // Like StorageBuffer, Tint outputs HLSL shaders for readonly
                         // storage buffer with ByteAddressBuffer. So we must use
                         // D3D12_BUFFER_SRV_FLAG_RAW when making the SRV descriptor. And it has
@@ -131,13 +134,13 @@ BindGroup::BindGroup(Device* device,
                         desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
                         desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                         desc.Buffer.FirstElement = binding.offset / 4;
-                        desc.Buffer.NumElements = binding.size / 4;
+                        desc.Buffer.NumElements = static_cast<uint32_t>(binding.size / 4);
                         desc.Buffer.StructureByteStride = 0;
                         desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
                         d3d12Device->CreateShaderResourceView(
                             resource, &desc,
-                            viewAllocation.OffsetFrom(viewSizeIncrement,
-                                                      descriptorHeapOffsets[bindingIndex]));
+                            mCPUViewAllocation.OffsetFrom(viewSizeIncrement,
+                                                          descriptorHeapOffsets[bindingIndex]));
                         break;
                     }
                     case wgpu::BufferBindingType::BindingNotUsed:
@@ -159,8 +162,8 @@ BindGroup::BindGroup(Device* device,
 
                 d3d12Device->CreateShaderResourceView(
                     resource, &srv,
-                    viewAllocation.OffsetFrom(viewSizeIncrement,
-                                              descriptorHeapOffsets[bindingIndex]));
+                    mCPUViewAllocation.OffsetFrom(viewSizeIncrement,
+                                                  descriptorHeapOffsets[bindingIndex]));
             },
             [&](const StorageTextureBindingInfo& layout) {
                 TextureView* view = ToBackend(GetBindingAsTextureView(bindingIndex));
@@ -179,16 +182,16 @@ BindGroup::BindGroup(Device* device,
                         D3D12_UNORDERED_ACCESS_VIEW_DESC uav = view->GetUAVDescriptor();
                         d3d12Device->CreateUnorderedAccessView(
                             resource, nullptr, &uav,
-                            viewAllocation.OffsetFrom(viewSizeIncrement,
-                                                      descriptorHeapOffsets[bindingIndex]));
+                            mCPUViewAllocation.OffsetFrom(viewSizeIncrement,
+                                                          descriptorHeapOffsets[bindingIndex]));
                         break;
                     }
                     case wgpu::StorageTextureAccess::ReadOnly: {
                         D3D12_SHADER_RESOURCE_VIEW_DESC srv = view->GetSRVDescriptor();
                         d3d12Device->CreateShaderResourceView(
                             resource, &srv,
-                            viewAllocation.OffsetFrom(viewSizeIncrement,
-                                                      descriptorHeapOffsets[bindingIndex]));
+                            mCPUViewAllocation.OffsetFrom(viewSizeIncrement,
+                                                          descriptorHeapOffsets[bindingIndex]));
                         break;
                     }
                     case wgpu::StorageTextureAccess::BindingNotUsed:
@@ -208,23 +211,32 @@ BindGroup::BindGroup(Device* device,
     // dynamic storage buffer to its binding size. The index |dynamicStorageBufferIndex|
     // means that it is the i'th buffer that is both dynamic and storage, in increasing order
     // of BindingNumber.
-    mDynamicStorageBufferLengths.resize(bgl->GetBindingCountInfo().dynamicStorageBufferCount);
+    mDynamicStorageBufferLengths.resize(bgl->GetDynamicStorageBufferCount());
     uint32_t dynamicStorageBufferIndex = 0;
     for (BindingIndex bindingIndex(0); bindingIndex < bgl->GetDynamicBufferCount();
          ++bindingIndex) {
         if (bgl->IsStorageBufferBinding(bindingIndex)) {
             mDynamicStorageBufferLengths[dynamicStorageBufferIndex++] =
-                GetBindingAsBufferBinding(bindingIndex).size;
+                static_cast<uint32_t>(GetBindingAsBufferBinding(bindingIndex).size);
         }
     }
-}
 
-BindGroup::~BindGroup() = default;
+    return {};
+}
 
 void BindGroup::DestroyImpl() {
     BindGroupBase::DestroyImpl();
-    ToBackend(GetLayout())->DeallocateBindGroup(this, &mCPUViewAllocation);
+    ToBackend(GetLayout())->DeallocateDescriptor(&mCPUViewAllocation);
     DAWN_ASSERT(!mCPUViewAllocation.IsValid());
+}
+
+void BindGroup::DeleteThis() {
+    // This function must first run the destructor and then deallocate memory. Take a reference to
+    // the BindGroupLayout+SlabAllocator before running the destructor so this function can access
+    // it afterwards and it's not destroyed prematurely.
+    Ref<BindGroupLayout> layout = ToBackend(GetLayout());
+    BindGroupBase::DeleteThis();
+    layout->DeallocateBindGroup(this);
 }
 
 bool BindGroup::PopulateViews(MutexProtected<ShaderVisibleDescriptorAllocator>& viewAllocator) {

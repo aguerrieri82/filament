@@ -38,10 +38,10 @@
 #include <Metal/Metal.h>
 #include <QuartzCore/QuartzCore.h>
 
-#include <utils/Log.h>
+#include <utils/Invocable.h>
+#include <utils/Logger.h>
 #include <utils/Panic.h>
 #include <utils/sstream.h>
-#include <utils/Invocable.h>
 
 #include <algorithm>
 
@@ -78,20 +78,18 @@ Driver* MetalDriverFactory::create(PlatformMetal* const platform, const Platform
     //    MetalVertexBufferInfo        : 552       moderate
     // -- less than or equal to 552 bytes
 
-    utils::slog.d
-           << "\nMetalSwapChain: " << sizeof(MetalSwapChain)
-           << "\nMetalBufferObject: " << sizeof(MetalBufferObject)
-           << "\nMetalVertexBuffer: " << sizeof(MetalVertexBuffer)
-           << "\nMetalVertexBufferInfo: " << sizeof(MetalVertexBufferInfo)
-           << "\nMetalIndexBuffer: " << sizeof(MetalIndexBuffer)
-           << "\nMetalRenderPrimitive: " << sizeof(MetalRenderPrimitive)
-           << "\nMetalTexture: " << sizeof(MetalTexture)
-           << "\nMetalTimerQuery: " << sizeof(MetalTimerQuery)
-           << "\nHwStream: " << sizeof(HwStream)
-           << "\nMetalRenderTarget: " << sizeof(MetalRenderTarget)
-           << "\nMetalFence: " << sizeof(MetalFence)
-           << "\nMetalProgram: " << sizeof(MetalProgram)
-           << utils::io::endl;
+    DLOG(INFO) << "MetalSwapChain: " << sizeof(MetalSwapChain);
+    DLOG(INFO) << "MetalBufferObject: " << sizeof(MetalBufferObject);
+    DLOG(INFO) << "MetalVertexBuffer: " << sizeof(MetalVertexBuffer);
+    DLOG(INFO) << "MetalVertexBufferInfo: " << sizeof(MetalVertexBufferInfo);
+    DLOG(INFO) << "MetalIndexBuffer: " << sizeof(MetalIndexBuffer);
+    DLOG(INFO) << "MetalRenderPrimitive: " << sizeof(MetalRenderPrimitive);
+    DLOG(INFO) << "MetalTexture: " << sizeof(MetalTexture);
+    DLOG(INFO) << "MetalTimerQuery: " << sizeof(MetalTimerQuery);
+    DLOG(INFO) << "HwStream: " << sizeof(HwStream);
+    DLOG(INFO) << "MetalRenderTarget: " << sizeof(MetalRenderTarget);
+    DLOG(INFO) << "MetalFence: " << sizeof(MetalFence);
+    DLOG(INFO) << "MetalProgram: " << sizeof(MetalProgram);
 #endif
     return MetalDriver::create(platform, driverConfig);
 }
@@ -135,19 +133,18 @@ MetalDriver::MetalDriver(
 
     initializeSupportedGpuFamilies(mContext);
 
-    utils::slog.v << "Supported GPU families: " << utils::io::endl;
+    LOG(INFO) << "Supported GPU families: ";
     if (mContext->highestSupportedGpuFamily.common > 0) {
-        utils::slog.v << "  MTLGPUFamilyCommon" << (int) mContext->highestSupportedGpuFamily.common << utils::io::endl;
+        LOG(INFO) << "  MTLGPUFamilyCommon" << (int) mContext->highestSupportedGpuFamily.common;
     }
     if (mContext->highestSupportedGpuFamily.apple > 0) {
-        utils::slog.v << "  MTLGPUFamilyApple" << (int) mContext->highestSupportedGpuFamily.apple << utils::io::endl;
+        LOG(INFO) << "  MTLGPUFamilyApple" << (int) mContext->highestSupportedGpuFamily.apple;
     }
     if (mContext->highestSupportedGpuFamily.mac > 0) {
-        utils::slog.v << "  MTLGPUFamilyMac" << (int) mContext->highestSupportedGpuFamily.mac << utils::io::endl;
+        LOG(INFO) << "  MTLGPUFamilyMac" << (int) mContext->highestSupportedGpuFamily.mac;
     }
-    utils::slog.v << "Features:" << utils::io::endl;
-    utils::slog.v << "  readWriteTextureSupport: " <<
-            (bool) mContext->device.readWriteTextureSupport << utils::io::endl;
+    LOG(INFO) << "Features:";
+    LOG(INFO) << "  readWriteTextureSupport: " << (bool) mContext->device.readWriteTextureSupport;
 
     // In order to support texture swizzling, the GPU needs to support it and the system be running
     // iOS 13+.
@@ -588,7 +585,7 @@ void MetalDriver::createProgramR(Handle<HwProgram> rph, Program&& program) {
 #if FILAMENT_METAL_DEBUG_LOG
     auto handleId = rph.getId();
     DEBUG_LOG("createProgramR(rph = %d, program = ", handleId);
-    utils::slog.d << program << utils::io::endl;
+    DLOG(INFO) << program;
 #endif
     construct_handle<MetalProgram>(rph, *mContext, std::move(program));
 }
@@ -672,22 +669,8 @@ void MetalDriver::createTimerQueryR(Handle<HwTimerQuery> tqh, int) {
     // nothing to do, timer query was constructed in createTimerQueryS
 }
 
-const char* toString(DescriptorType type) {
-    switch (type) {
-        case DescriptorType::UNIFORM_BUFFER:
-            return "UNIFORM_BUFFER";
-        case DescriptorType::SHADER_STORAGE_BUFFER:
-            return "SHADER_STORAGE_BUFFER";
-        case DescriptorType::SAMPLER:
-            return "SAMPLER";
-        case DescriptorType::INPUT_ATTACHMENT:
-            return "INPUT_ATTACHMENT";
-        case DescriptorType::SAMPLER_EXTERNAL:
-            return "SAMPLER_EXTERNAL";
-    }
-}
-
-const char* toString(ShaderStageFlags flags) {
+UTILS_UNUSED
+static const char* toString(ShaderStageFlags flags) {
     std::vector<const char*> stages;
     if (any(flags & ShaderStageFlags::VERTEX)) {
         stages.push_back("VERTEX");
@@ -721,15 +704,25 @@ const char* toString(DescriptorFlags flags) {
 
 void MetalDriver::createDescriptorSetLayoutR(
         Handle<HwDescriptorSetLayout> dslh, DescriptorSetLayout&& info) {
+#if FILAMENT_METAL_DEBUG_LOG == 1
+    const char* labelStr = "";
+    std::visit([&labelStr](auto&& arg) {
+        using T = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<T, utils::CString> || std::is_same_v<T, utils::StaticString>) {
+            labelStr = arg.c_str();
+        }
+    }, info.label);
     std::sort(info.bindings.begin(), info.bindings.end(),
             [](const auto& a, const auto& b) { return a.binding < b.binding; });
-    DEBUG_LOG("createDescriptorSetLayoutR(dslh = %d, info = {\n", dslh.getId());
+    DEBUG_LOG("createDescriptorSetLayoutR(dslh = %d, info = { label = %s,\n", dslh.getId(),
+            labelStr);
     for (size_t i = 0; i < info.bindings.size(); i++) {
         DEBUG_LOG("    {binding = %d, type = %s, count = %d, stage = %s, flags = %s},\n",
                 info.bindings[i].binding, toString(info.bindings[i].type), info.bindings[i].count,
                 toString(info.bindings[i].stageFlags), toString(info.bindings[i].flags));
     }
     DEBUG_LOG("})\n");
+#endif
     construct_handle<MetalDescriptorSetLayout>(dslh, std::move(info));
 }
 
@@ -1177,9 +1170,17 @@ size_t MetalDriver::getMaxUniformBufferSize() {
     return 256 * 1024 * 1024;   // TODO: return the actual size instead of hardcoding the minspec
 }
 
-size_t MetalDriver::getMaxTextureSize(SamplerType) {
-    // TODO: return the actual size instead of hardcoding the minspec
-    return 2048;
+size_t MetalDriver::getMaxTextureSize(SamplerType type) {
+    if (type == SamplerType::SAMPLER_3D) {
+        return 2048;
+    }
+    if (mContext->highestSupportedGpuFamily.apple >= 3 ||
+            mContext->highestSupportedGpuFamily.mac >= 2) {
+        return 16384;
+    } else if (mContext->highestSupportedGpuFamily.apple >= 2) {
+        return 8192;
+    }
+    return 4096;
 }
 
 size_t MetalDriver::getMaxArrayTextureLayers() {
@@ -1400,8 +1401,8 @@ void MetalDriver::setRenderPrimitiveBuffer(Handle<HwRenderPrimitive> rph, Primit
     auto primitive = handle_cast<MetalRenderPrimitive>(rph);
     auto vertexBuffer = handle_cast<MetalVertexBuffer>(vbh);
     auto indexBuffer = handle_cast<MetalIndexBuffer>(ibh);
-    MetalVertexBufferInfo const* const vbi = handle_cast<MetalVertexBufferInfo>(vertexBuffer->vbih);
-    primitive->setBuffers(vbi, vertexBuffer, indexBuffer);
+    primitive->vertexBuffer = vertexBuffer;
+    primitive->indexBuffer = indexBuffer;
     primitive->type = pt;
 }
 
@@ -1506,14 +1507,6 @@ void MetalDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y,
             << ") and PixelDataType (" << (int)data.type
             << ") is not supported for "
                "readPixels.";
-
-    const bool formatConversionNecessary = srcTexture.pixelFormat != format;
-
-    // TODO: MetalBlitter does not currently support format conversions to integer types.
-    // The format and type must match the source pixel format exactly.
-    FILAMENT_CHECK_PRECONDITION(!formatConversionNecessary || !isMetalFormatInteger(format))
-            << "readPixels does not support integer format conversions from MTLPixelFormat ("
-            << (int)srcTexture.pixelFormat << ") to (" << (int)format << ").";
 
     MTLTextureDescriptor* textureDescriptor =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
@@ -1809,7 +1802,8 @@ void MetalDriver::bindPipeline(PipelineState const& ps) {
             .sourceRGBBlendFactor = getMetalBlendFactor(rs.blendFunctionSrcRGB),
             .blendingEnabled = rs.hasBlending(),
         },
-        .colorWrite = rs.colorWrite
+        .colorWrite = rs.colorWrite,
+        .alphaToCoverage = rs.alphaToCoverage
     };
     mContext->pipelineState.updateState(pipelineState);
     if (mContext->pipelineState.stateChanged()) {
@@ -2073,7 +2067,7 @@ void MetalDriver::dispatchCompute(Handle<HwProgram> program, math::uint3 workGro
                                                             error:&error];
     if (error) {
         auto description = [error.localizedDescription cStringUsingEncoding:NSUTF8StringEncoding];
-        utils::slog.e << description << utils::io::endl;
+        LOG(ERROR) << description;
     }
     assert_invariant(!error);
 

@@ -89,15 +89,15 @@ struct VertexBufferInfo {
 class RenderPipelineBase : public PipelineBase,
                            public ContentLessObjectCacheable<RenderPipelineBase> {
   public:
-    RenderPipelineBase(
-        DeviceBase* device,
-        const UnpackedPtr<RenderPipelineDescriptor>& descriptor,
-        ImmediateConstantMask requiredInternalImmediateConstants = ImmediateConstantMask(0u));
+    RenderPipelineBase(DeviceBase* device, const UnpackedPtr<RenderPipelineDescriptor>& descriptor);
     ~RenderPipelineBase() override;
 
     static Ref<RenderPipelineBase> MakeError(DeviceBase* device, StringView label);
 
     ObjectType GetType() const override;
+
+    const RenderPipelineBase* AsRenderPipeline() const override { return this; }
+    RenderPipelineBase* AsRenderPipeline() override { return this; }
 
     // Vertex getters
     const VertexAttributeMask& GetAttributeLocationsUsed() const;

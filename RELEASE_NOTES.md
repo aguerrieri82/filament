@@ -7,6 +7,87 @@ A new header is inserted each time a *tag* is created.
 Instead, if you are authoring a PR for the main branch, add your release note to
 [NEW_RELEASE_NOTES.md](./NEW_RELEASE_NOTES.md).
 
+## v1.64.1
+
+- Update CMake minimum version to 3.22.1
+- material: Add a material parameter to control shadow far attenuation (b/436680157)
+
+## v1.64.0
+
+- engine: add a `linearFog` material parameter. [⚠️ **New Material Version**]
+- opengl: When `Material::compile()` is called on a platform which doesn't support parallel compilation, shaders are automatically compiled over a number of frames
+- engine: Added `useDefaultDepthVariant` material parameter to force Filament to use its default variant for
+  depth-only passes. [**Requires recompiling materials**]
+- material: fix specularFactor in `LOW_QUALITY` mode. [**Requires recompiling materials**] to take effect.
+- material: Add CRC32 validation for material packages [⚠️ **New Material Version**]
+- material: Improve LineDictionary compression [⚠️ **New Material Version**]
+- Filament is now targeting c++20 (was previously c++17)
+
+## v1.63.1
+
+
+## v1.63.0
+
+- Rename `sampler` parameter `unfilterable` to `filterable` [⚠️ **New Material Version**]
+- Added `Renderer::shouldRenderFrame()`
+
+## v1.62.2
+
+- Metal: fix, respect alpha to coverage rasterization
+- engine: removed `Texture::generatePrefilterMipmap`, a new `libfilament-generatePrefilterMipmap` library can be used in its stead [⚠️ **API BREAKAGE**]
+
+## v1.62.1
+
+- Add new shader define `VARIANT_DEPTH`, defined when a material is compiled for depth variants
+  (e.g., shadows) [**Requires recompiling materials**]
+
+## v1.62.0
+
+- Add new `unfilterable` field to Filament Material's `sampler` [⚠️ **New Material Version**]
+
+## v1.61.2
+
+- samples: samples now have a CLI to select backend api
+
+## v1.61.1
+
+
+## v1.61.0
+
+- materials: sampler now export their type in the material binary [⚠️ **New Material Version**]
+- samples/texturedquad.cpp now has CLI to select backend api
+- samples/hellopbr.cpp CLI now allows for selecting webgpu
+
+## v1.60.1
+
+
+## v1.60.0
+
+- materials: remove dependence on per-view descset layout from filamat. [⚠️ **New Material Version**]
+- matc non-functional change: Update GLSL postprocessor to
+  isolate calls to SPVRemap from calls to SPIRV-Cross.
+
+
+## v1.59.5
+
+
+## v1.59.4
+
+
+## v1.59.3
+
+
+## v1.59.2
+
+- Fix build/compile errors when upgrading to MacOS 15.4
+
+## v1.59.1
+
+
+## v1.59.0
+
+- materials: five custom variables (varyings) are now available on the condition that the `color` attribute is not requested (b/404930099). [⚠️ **New Material Version**]
+
 ## v1.58.2
 
 - engine: Generate 1D instead of 3D LUTs for color grading whenever possible.

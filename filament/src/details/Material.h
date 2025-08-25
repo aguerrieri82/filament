@@ -93,20 +93,21 @@ public:
         return mPerViewDescriptorSetLayout;
     }
 
-    DescriptorSetLayout const& getPerViewDescriptorSetLayout(Variant const variant) const noexcept {
-        if (Variant::isValidDepthVariant(variant)) {
-            assert_invariant(mMaterialDomain == MaterialDomain::SURFACE);
-            return mEngine.getPerViewDescriptorSetLayoutDepthVariant();
-        }
-        if (Variant::isSSRVariant(variant)) {
-            assert_invariant(mMaterialDomain == MaterialDomain::SURFACE);
-            return mEngine.getPerViewDescriptorSetLayoutSsrVariant();
-        }
-        return mPerViewDescriptorSetLayout;
-    }
+    DescriptorSetLayout const& getPerViewDescriptorSetLayout(
+            Variant const variant, bool const useVsmDescriptorSetLayout) const noexcept;
 
-    DescriptorSetLayout const& getDescriptorSetLayout() const noexcept {
-        return mDescriptorSetLayout;
+    // Returns the layout that should be used when this material is bound to the pipeline for the
+    // given variant. Shared variants use the Engine's default material's variants, so we should
+    // also use the default material's layout.
+    DescriptorSetLayout const& getDescriptorSetLayout(Variant variant = {}) const noexcept {
+        if (!isSharedVariant(variant)) {
+            return mDescriptorSetLayout;
+        }
+        FMaterial const* const pDefaultMaterial = mEngine.getDefaultMaterial();
+        if (UTILS_UNLIKELY(!pDefaultMaterial)) {
+            return mDescriptorSetLayout;
+        }
+        return pDefaultMaterial->getDescriptorSetLayout();
     }
 
     void compile(CompilerPriorityQueue priority,
@@ -141,7 +142,7 @@ public:
     // Must be called outside of backend render pass.
     // Must be called before getProgram() below.
     void prepareProgram(Variant const variant,
-            backend::CompilerPriorityQueue const priorityQueue = CompilerPriorityQueue::HIGH) const noexcept {
+            backend::CompilerPriorityQueue const priorityQueue) const noexcept {
         // prepareProgram() is called for each RenderPrimitive in the scene, so it must be efficient.
         if (UTILS_UNLIKELY(!isCached(variant))) {
             prepareProgramSlow(variant, priorityQueue);
@@ -150,30 +151,34 @@ public:
 
     // getProgram returns the backend program for the material's given variant.
     // Must be called after prepareProgram().
-    [[nodiscard]] backend::Handle<backend::HwProgram> getProgram(Variant const variant) const noexcept {
+    [[nodiscard]]
+    backend::Handle<backend::HwProgram> getProgram(Variant const variant) const noexcept {
 #if FILAMENT_ENABLE_MATDBG
-        assert_invariant((size_t)variant.key < VARIANT_COUNT);
-        std::unique_lock<utils::Mutex> lock(mActiveProgramsLock);
-        if (getMaterialDomain() == MaterialDomain::SURFACE) {
-            auto vert = Variant::filterVariantVertex(variant);
-            auto frag = Variant::filterVariantFragment(variant);
-            mActivePrograms.set(vert.key);
-            mActivePrograms.set(frag.key);
-        } else {
-            mActivePrograms.set(variant.key);
-        }
-        lock.unlock();
-
-        if (isSharedVariant(variant)) {
-            FMaterial const* const pDefaultMaterial = mEngine.getDefaultMaterial();
-            if (pDefaultMaterial && pDefaultMaterial->mCachedPrograms[variant.key]) {
-                return pDefaultMaterial->getProgram(variant);
-            }
-        }
+        return getProgramWithMATDBG(variant);
 #endif
         assert_invariant(mCachedPrograms[variant.key]);
         return mCachedPrograms[variant.key];
     }
+
+    // MaterialInstance::use() binds descriptor sets before drawing. For shared variants,
+    // however, the material instance will call useShared() to bind the default material's sets
+    // instead.
+    // Returns true if this is a shared variant.
+    bool useShared(backend::DriverApi& driver, Variant variant) const noexcept {
+        if (!isSharedVariant(variant)) {
+            return false;
+        }
+        FMaterial const* const pDefaultMaterial = mEngine.getDefaultMaterial();
+        if (UTILS_UNLIKELY(!pDefaultMaterial)) {
+            return false;
+        }
+        FMaterialInstance const* const pDefaultInstance = pDefaultMaterial->getDefaultInstance();
+        pDefaultInstance->use(driver, variant);
+        return true;
+    }
+
+    [[nodiscard]]
+    backend::Handle<backend::HwProgram> getProgramWithMATDBG(Variant variant) const noexcept;
 
     bool isVariantLit() const noexcept { return mIsVariantLit; }
 
@@ -289,7 +294,7 @@ private:
     void getPostProcessProgramSlow(Variant variant,
             CompilerPriorityQueue priorityQueue) const noexcept;
     backend::Program getProgramWithVariants(Variant variant,
-            Variant vertexVariant, Variant fragmentVariant) const noexcept;
+            Variant vertexVariant, Variant fragmentVariant) const;
 
     void processBlendingMode(MaterialParser const* parser);
 
@@ -298,7 +303,7 @@ private:
 
     void processPushConstants(FEngine& engine, MaterialParser const* parser);
 
-    void precacheDepthVariants(FEngine const& engine);
+    void precacheDepthVariants(FEngine& engine);
 
     void processDescriptorSets(FEngine& engine, MaterialParser const* parser);
 
@@ -312,6 +317,7 @@ private:
     // try to order by frequency of use
     mutable std::array<backend::Handle<backend::HwProgram>, VARIANT_COUNT> mCachedPrograms;
     DescriptorSetLayout mPerViewDescriptorSetLayout;
+    DescriptorSetLayout mPerViewDescriptorSetLayoutVsm;
     DescriptorSetLayout mDescriptorSetLayout;
     backend::Program::DescriptorSetInfo mProgramDescriptorBindings;
 

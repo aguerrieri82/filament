@@ -37,13 +37,12 @@ namespace {
 
 class OpArrayLengthTest : public DawnTest {
   protected:
-    wgpu::RequiredLimits GetRequiredLimits(const wgpu::SupportedLimits& supported) override {
+    void GetRequiredLimits(const dawn::utils::ComboLimits& supported,
+                           dawn::utils::ComboLimits& required) override {
         // Just copy all the limits, though all we really care about is
         // maxStorageBuffersInFragmentStage
         // maxStorageBuffersInVertexStage
-        wgpu::RequiredLimits required = {};
-        required.limits = supported.limits;
-        return required;
+        supported.UnlinkedCopyTo(&required);
     }
 
     void SetUp() override {
@@ -119,10 +118,6 @@ class OpArrayLengthTest : public DawnTest {
 
 // Test OpArrayLength in the compute stage
 TEST_P(OpArrayLengthTest, Compute) {
-    // TODO(crbug.com/dawn/197): The computations for length() of unsized buffer is broken on
-    // Nvidia OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsNvidia() && (IsOpenGL() || IsOpenGLES()));
-
     // Create a buffer to hold the result sizes and create a bindgroup for it.
     wgpu::BufferDescriptor bufferDesc;
     bufferDesc.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopySrc;
@@ -177,11 +172,11 @@ TEST_P(OpArrayLengthTest, Compute) {
 
 // Test OpArrayLength in the fragment stage
 TEST_P(OpArrayLengthTest, Fragment) {
-    // TODO(crbug.com/dawn/197): The computations for length() of unsized buffer is broken on
-    // Nvidia OpenGL.
-    DAWN_SUPPRESS_TEST_IF(IsNvidia() && (IsOpenGL() || IsOpenGLES()));
+    // TODO(crbug.com/408042465): investigate this failure on Pixel 6 OpenGLES
+    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsARM() &&
+                          HasToggleEnabled("gl_use_array_length_from_uniform"));
 
-    DAWN_SUPPRESS_TEST_IF(GetSupportedLimits().limits.maxStorageBuffersInFragmentStage < 3);
+    DAWN_TEST_UNSUPPORTED_IF(GetSupportedLimits().maxStorageBuffersInFragmentStage < 3);
 
     utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, 1, 1);
 
@@ -235,14 +230,7 @@ TEST_P(OpArrayLengthTest, Fragment) {
 
 // Test OpArrayLength in the vertex stage
 TEST_P(OpArrayLengthTest, Vertex) {
-    // TODO(crbug.com/dawn/197): The computations for length() of unsized buffer is broken on
-    // Nvidia OpenGL and OpenGLES.
-    DAWN_SUPPRESS_TEST_IF(IsNvidia() && (IsOpenGL() || IsOpenGLES()));
-
-    // TODO(crbug.com/dawn/2295): Also failing on Pixel 6 OpenGLES (ARM).
-    DAWN_SUPPRESS_TEST_IF(IsOpenGLES() && IsAndroid() && IsARM());
-
-    DAWN_SUPPRESS_TEST_IF(GetSupportedLimits().limits.maxStorageBuffersInVertexStage < 3);
+    DAWN_TEST_UNSUPPORTED_IF(GetSupportedLimits().maxStorageBuffersInVertexStage < 3);
 
     utils::BasicRenderPass renderPass = utils::CreateBasicRenderPass(device, 1, 1);
 
@@ -308,6 +296,7 @@ DAWN_INSTANTIATE_TEST(OpArrayLengthTest,
                       MetalBackend(),
                       OpenGLBackend(),
                       OpenGLESBackend(),
+                      OpenGLESBackend({"gl_use_array_length_from_uniform"}),
                       VulkanBackend());
 
 }  // anonymous namespace

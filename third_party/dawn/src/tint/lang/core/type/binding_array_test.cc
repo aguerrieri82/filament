@@ -27,8 +27,10 @@
 
 #include "src/tint/lang/core/type/helper_test.h"
 
+#include "src/tint/lang/core/type/array_count.h"
 #include "src/tint/lang/core/type/binding_array.h"
 #include "src/tint/lang/core/type/f32.h"
+#include "src/tint/lang/core/type/manager.h"
 #include "src/tint/lang/core/type/sampled_texture.h"
 #include "src/tint/lang/core/type/u32.h"
 
@@ -38,33 +40,33 @@ namespace {
 using BindingArrayTest = TestHelper;
 
 TEST_F(BindingArrayTest, Creation) {
-    auto* f32 = create<F32>();
-    auto* t = create<SampledTexture>(TextureDimension::k2d, f32);
-    auto* a = create<BindingArray>(t, 3u);
+    Manager ty;
+    auto* t = ty.sampled_texture(TextureDimension::k2d, ty.f32());
+    auto* a = ty.binding_array(t, 3u);
 
     EXPECT_EQ(a->ElemType(), t);
-    EXPECT_EQ(a->Count(), 3u);
+    EXPECT_TRUE(a->Count()->Is<ConstantArrayCount>());
+    EXPECT_EQ(a->Count()->As<ConstantArrayCount>()->value, 3u);
 }
 
 TEST_F(BindingArrayTest, Hash) {
-    auto* f32 = create<F32>();
-    auto* t = create<SampledTexture>(TextureDimension::k2d, f32);
-    auto* a = create<BindingArray>(t, 3u);
-    auto* a2 = create<BindingArray>(t, 3u);
+    Manager ty;
+    auto* t = ty.sampled_texture(TextureDimension::k2d, ty.f32());
+    auto* a = ty.binding_array(t, 3u);
+    auto* a2 = ty.binding_array(t, 3u);
 
     EXPECT_EQ(a->unique_hash, a2->unique_hash);
 }
 
 TEST_F(BindingArrayTest, Equals) {
-    auto* f32 = create<F32>();
-    auto* t1 = create<SampledTexture>(TextureDimension::k2d, f32);
-    auto* u32 = create<U32>();
-    auto* t2 = create<SampledTexture>(TextureDimension::k2d, u32);
+    Manager ty;
+    auto* t1 = ty.sampled_texture(TextureDimension::k2d, ty.f32());
+    auto* t2 = ty.sampled_texture(TextureDimension::k2d, ty.u32());
 
-    auto* a = create<BindingArray>(t1, 3u);
-    auto* a2 = create<BindingArray>(t1, 3u);
-    auto* a_count = create<BindingArray>(t1, 4u);
-    auto* a_type = create<BindingArray>(t2, 3u);
+    auto* a = ty.binding_array(t1, 3u);
+    auto* a2 = ty.binding_array(t1, 3u);
+    auto* a_count = ty.binding_array(t1, 4u);
+    auto* a_type = ty.binding_array(t2, 3u);
 
     EXPECT_EQ(a, a2);
     EXPECT_NE(a, a_count);
@@ -72,32 +74,32 @@ TEST_F(BindingArrayTest, Equals) {
 }
 
 TEST_F(BindingArrayTest, FriendlyName) {
-    auto* f32 = create<F32>();
-    auto* t = create<SampledTexture>(TextureDimension::k2d, f32);
-    auto* a = create<BindingArray>(t, 3u);
+    Manager ty;
+    auto* t = ty.sampled_texture(TextureDimension::k2d, ty.f32());
+    auto* a = ty.binding_array(t, 3u);
     EXPECT_EQ(a->FriendlyName(), "binding_array<texture_2d<f32>, 3>");
 }
 
 TEST_F(BindingArrayTest, Element) {
-    auto* f32 = create<F32>();
-    auto* t = create<SampledTexture>(TextureDimension::k2d, f32);
-    auto* a = create<BindingArray>(t, 3u);
+    Manager ty;
+    auto* t = ty.sampled_texture(TextureDimension::k2d, ty.f32());
+    auto* a = ty.binding_array(t, 3u);
     EXPECT_EQ(a->Element(2), t);
     EXPECT_EQ(a->Element(3), nullptr);
 }
 
 TEST_F(BindingArrayTest, Elements) {
-    auto* f32 = create<F32>();
-    auto* t = create<SampledTexture>(TextureDimension::k2d, f32);
-    auto* a = create<BindingArray>(t, 3u);
+    Manager ty;
+    auto* t = ty.sampled_texture(TextureDimension::k2d, ty.f32());
+    auto* a = ty.binding_array(t, 3u);
     EXPECT_EQ(a->Elements().type, t);
     EXPECT_EQ(a->Elements().count, 3u);
 }
 
 TEST_F(BindingArrayTest, Clone) {
-    auto* f32 = create<F32>();
-    auto* t = create<SampledTexture>(TextureDimension::k2d, f32);
-    auto* a = create<BindingArray>(t, 3u);
+    Manager ty;
+    auto* t = ty.sampled_texture(TextureDimension::k2d, ty.f32());
+    auto* a = ty.binding_array(t, 3u);
 
     core::type::Manager mgr;
     core::type::CloneContext ctx{{nullptr}, {nullptr, &mgr}};
@@ -105,7 +107,8 @@ TEST_F(BindingArrayTest, Clone) {
     auto* s = a->Clone(ctx);
     EXPECT_TRUE(s->ElemType()->Is<SampledTexture>());
     EXPECT_TRUE(s->ElemType()->As<SampledTexture>()->Type()->Is<F32>());
-    EXPECT_EQ(s->Count(), a->Count());
+    EXPECT_TRUE(s->Count()->Is<ConstantArrayCount>());
+    EXPECT_EQ(s->Count()->As<ConstantArrayCount>()->value, 3u);
 }
 
 }  // namespace

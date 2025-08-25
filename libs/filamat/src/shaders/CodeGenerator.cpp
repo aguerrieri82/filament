@@ -176,8 +176,6 @@ utils::io::sstream& CodeGenerator::generateCommonProlog(utils::io::sstream& out,
         // TODO: Handle webgpu here
         case TargetApi::WEBGPU:
             //For now, no differences so inherit the same changes.
-            // TODO Define a separte environment, OR relevant checks
-            out << "#define TARGET_VULKAN_ENVIRONMENT\n";
             out << "#define TARGET_WEBGPU_ENVIRONMENT\n";
             break;
         case TargetApi::ALL:
@@ -252,6 +250,10 @@ utils::io::sstream& CodeGenerator::generateCommonProlog(utils::io::sstream& out,
         CodeGenerator::generateDefine(out, "LEGACY_MORPHING", material.useLegacyMorphing);
     }
     if (stage == ShaderStage::FRAGMENT) {
+        CodeGenerator::generateDefine(out, "FILAMENT_LINEAR_FOG",
+                material.linearFog);
+        CodeGenerator:generateDefine(out, "FILAMENT_SHADOW_FAR_ATTENUATION",
+                material.shadowFarAttenuation);
         CodeGenerator::generateDefine(out, "MATERIAL_HAS_CUSTOM_DEPTH",
                 material.userMaterialHasCustomDepth);
     }
@@ -541,13 +543,14 @@ io::sstream& CodeGenerator::generateOutput(io::sstream& out, ShaderStage stage,
 
     const char* swizzleString = "";
 
-    // Metal doesn't support some 3-component texture formats, so the backend uses 4-component
+    // Metal and WebGPU don't support some 3-component texture formats, so the backend uses 4-component
     // formats behind the scenes. It's an error to output fewer components than the attachment
     // needs, so we always output a float4 instead of a float3. It's never an error to output extra
     // components.
     //
     // Meanwhile, ESSL 1.0 must always write to gl_FragColor, a vec4.
-    if (mTargetApi == TargetApi::METAL || mFeatureLevel == FeatureLevel::FEATURE_LEVEL_0) {
+    if (mTargetApi == TargetApi::METAL || mTargetApi == TargetApi::WEBGPU ||
+            mFeatureLevel == FeatureLevel::FEATURE_LEVEL_0) {
         if (outputType == MaterialBuilder::OutputType::FLOAT3) {
             outputType = MaterialBuilder::OutputType::FLOAT4;
             swizzleString = ".rgb";
@@ -937,6 +940,15 @@ utils::io::sstream& CodeGenerator::generateSpecializationConstant(utils::io::sst
     std::string const constantString = std::visit(SpecializationConstantFormatter(), value);
 
     static const char* types[] = { "int", "float", "bool" };
+
+    // Spec constants aren't fully supported in Tint,
+    //  workaround until https://issues.chromium.org/issues/42250586 is resolved
+    if (mTargetApi == TargetApi::WEBGPU) {
+        std::string const variableName = "FILAMENT_SPEC_CONST_" + std::to_string(id) + "_" + name;
+        out << " const " << types[value.index()] << " " << variableName << " = " << constantString << ";\n";
+        out << types[value.index()] << " " << name << " =  " << variableName << ";\n";
+        return out;
+    }
     if (mTargetLanguage == MaterialBuilderBase::TargetLanguage::SPIRV) {
         out << "layout (constant_id = " << id << ") const "
             << types[value.index()] << " " << name << " = " << constantString << ";\n";

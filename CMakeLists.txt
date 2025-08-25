@@ -1,7 +1,11 @@
 # ==================================================================================================
 # CMake
 # ==================================================================================================
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.22.1)
+
+# Note: we set the main CMakeLists.txt's minimum cmake version to the maximum of all the
+# cmake_minimum_required versions for the full build (building for all backends, and for
+# both release and debug).
 
 # ==================================================================================================
 # Toolchain configuration
@@ -22,7 +26,6 @@ project(TNT)
 option(FILAMENT_USE_EXTERNAL_GLES3 "Experimental: Compile Filament against OpenGL ES 3" OFF)
 
 option(FILAMENT_ENABLE_LTO "Enable link-time optimizations if supported by the compiler" OFF)
-
 option(FILAMENT_SKIP_SAMPLES "Don't build samples" OFF)
 
 option(FILAMENT_SUPPORTS_XCB "Include XCB support in Linux builds" ON)
@@ -41,6 +44,8 @@ option(FILAMENT_ENABLE_ASAN_UBSAN "Enable Address and Undefined Behavior Sanitiz
 
 option(FILAMENT_ENABLE_TSAN "Enable Thread Sanitizer" OFF)
 
+option(FILAMENT_ENABLE_COVERAGE "Enable LLVM code coverage" OFF)
+
 option(FILAMENT_ENABLE_FEATURE_LEVEL_0 "Enable Feature Level 0" ON)
 
 option(FILAMENT_ENABLE_MULTIVIEW "Enable multiview for Filament" OFF)
@@ -48,6 +53,12 @@ option(FILAMENT_ENABLE_MULTIVIEW "Enable multiview for Filament" OFF)
 option(FILAMENT_SUPPORTS_OSMESA "Enable OSMesa (headless GL context) for Filament" OFF)
 
 option(FILAMENT_ENABLE_FGVIEWER "Enable the frame graph viewer" OFF)
+
+option(FILAMENT_USE_ABSEIL_LOGGING "Use Abseil to log, may increase binary size" OFF)
+
+# This is to disable GTAO for the short-term while we investigate a way to better manage size increases.
+# On the regular filament build (where size is of less concern), we enable GTAO by default.
+option(FILAMENT_DISABLE_GTAO "Disable GTAO" OFF)
 
 set(FILAMENT_NDK_VERSION "" CACHE STRING
     "Android NDK version or version prefix to be used when building for Android."
@@ -324,9 +335,9 @@ endif()
 # ==================================================================================================
 # General compiler flags
 # ==================================================================================================
-set(CXX_STANDARD "-std=c++17")
+set(CXX_STANDARD "-std=c++20")
 if (WIN32)
-    set(CXX_STANDARD "/std:c++17")
+    set(CXX_STANDARD "/std:c++20")
 endif()
 
 if (MSVC)
@@ -334,6 +345,9 @@ if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_STANDARD} /W0 /Zc:__cplusplus")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_STANDARD} -fstrict-aliasing -Wno-unknown-pragmas -Wno-unused-function -Wno-deprecated-declarations")
+    if (APPLE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nullability-extension")
+    endif()
 endif()
 
 if (FILAMENT_USE_EXTERNAL_GLES3)
@@ -451,6 +465,10 @@ if (NOT MSVC AND NOT WEBGL)
 endif()
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${EXTRA_SANITIZE_OPTIONS}")
 
+if (FILAMENT_ENABLE_COVERAGE)
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fprofile-instr-generate -fcoverage-mapping")
+endif()
+
 # Disable the stack check for macOS to workaround a known issue in clang 11.0.0.
 # See: https://forums.developer.apple.com/thread/121887
 if (APPLE)
@@ -526,7 +544,6 @@ if (FILAMENT_SUPPORTS_VULKAN)
 endif()
 
 if (FILAMENT_SUPPORTS_WEBGPU)
-    message(AUTHOR_WARNING "WebGPU is in development stage and broken at this stage. Its support is very limited.")
     add_definitions(-DFILAMENT_SUPPORTS_WEBGPU)
 endif()
 
@@ -582,6 +599,10 @@ endif ()
 if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT FILAMENT_BACKEND_DEBUG_FLAG STREQUAL "")
     add_definitions(-DFILAMENT_BACKEND_DEBUG_FLAG=${FILAMENT_BACKEND_DEBUG_FLAG})
     unset(FILAMENT_BACKEND_DEBUG_FLAG)
+endif()
+
+if (FILAMENT_USE_ABSEIL_LOGGING)
+    add_definitions(-DFILAMENT_USE_ABSEIL_LOGGING)
 endif()
 
 # ==================================================================================================
@@ -773,6 +794,7 @@ add_subdirectory(${LIBRARIES}/filabridge)
 add_subdirectory(${LIBRARIES}/filaflat)
 add_subdirectory(${LIBRARIES}/filagui)
 add_subdirectory(${LIBRARIES}/filameshio)
+add_subdirectory(${LIBRARIES}/generatePrefilterMipmap)
 add_subdirectory(${LIBRARIES}/gltfio)
 add_subdirectory(${LIBRARIES}/ibl)
 add_subdirectory(${LIBRARIES}/iblprefilter)
@@ -798,6 +820,8 @@ add_subdirectory(${EXTERNAL}/draco/tnt)
 add_subdirectory(${EXTERNAL}/jsmn/tnt)
 add_subdirectory(${EXTERNAL}/stb/tnt)
 add_subdirectory(${EXTERNAL}/getopt)
+add_subdirectory(${EXTERNAL}/perfetto/tnt)
+add_subdirectory(${EXTERNAL}/zstd/tnt)
 
 # Note that this has to be placed after mikktspace in order for combine_static_libs to work.
 add_subdirectory(${LIBRARIES}/geometry)
@@ -850,6 +874,7 @@ if (IS_HOST_PLATFORM)
       add_subdirectory(${LIBRARIES}/filamentapp)
     endif()
     add_subdirectory(${LIBRARIES}/imageio)
+    add_subdirectory(${LIBRARIES}/filament-matp)
 
     add_subdirectory(${FILAMENT}/samples)
 

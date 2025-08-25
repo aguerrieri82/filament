@@ -380,6 +380,16 @@ spv_result_t CheckMemoryAccess(ValidationState_t& _, const Instruction* inst,
              << _.VkErrorID(4708)
              << "Memory accesses with PhysicalStorageBuffer must use Aligned.";
     }
+  } else {
+    // even if there are other masks, the Aligned operand will be next
+    const uint32_t aligned_value = inst->GetOperandAs<uint32_t>(index + 1);
+    const bool is_power_of_two =
+        aligned_value && !(aligned_value & (aligned_value - 1));
+    if (!is_power_of_two) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Memory accesses Aligned operand value " << aligned_value
+             << " is not a power of two.";
+    }
   }
 
   return SPV_SUCCESS;
@@ -580,7 +590,7 @@ spv_result_t ValidateVariable(ValidationState_t& _, const Instruction* inst) {
       if (pointee && !IsAllowedTypeOrArrayOfSame(
                          _, pointee,
                          {spv::Op::OpTypeImage, spv::Op::OpTypeSampler,
-                          spv::Op::OpTypeSampledImage,
+                          spv::Op::OpTypeSampledImage, spv::Op::OpTypeTensorARM,
                           spv::Op::OpTypeAccelerationStructureKHR})) {
         return _.diag(SPV_ERROR_INVALID_ID, inst)
                << _.VkErrorID(4655) << "UniformConstant OpVariable <id> "
@@ -924,6 +934,65 @@ spv_result_t ValidateVariable(ValidationState_t& _, const Instruction* inst) {
                << "Allocating a variable containing a 8-bit element in "
                << sc_name << " storage class requires an additional capability";
       }
+    }
+  }
+
+  if (_.HasCapability(spv::Capability::TileShadingQCOM) &&
+      storage_class == spv::StorageClass::TileAttachmentQCOM) {
+    if (result_type->opcode() == spv::Op::OpTypePointer) {
+      const auto pointee_type =
+          _.FindDef(result_type->GetOperandAs<uint32_t>(2));
+      if (pointee_type && pointee_type->opcode() == spv::Op::OpTypeImage) {
+        spv::Dim dim = static_cast<spv::Dim>(pointee_type->word(3));
+        if (dim != spv::Dim::Dim2D) {
+          return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                 << "Any OpTypeImage variable in the TileAttachmentQCOM "
+                    "Storage Class must "
+                    "have 2D as its dimension";
+        }
+        unsigned sampled = pointee_type->word(7);
+        if (sampled != 1 && sampled != 2) {
+          return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                 << "Any OpyTpeImage variable in the TileAttachmentQCOM "
+                    "Storage Class must "
+                    "have 1 or 2 as Image 'Sampled' parameter";
+        }
+        for (const auto& pair_o : inst->uses()) {
+          const auto* use_inst_o = pair_o.first;
+          if (use_inst_o->opcode() == spv::Op::OpLoad) {
+            for (const auto& pair_i : use_inst_o->uses()) {
+              const auto* use_inst_i = pair_i.first;
+              switch (use_inst_i->opcode()) {
+                case spv::Op::OpImageQueryFormat:
+                case spv::Op::OpImageQueryOrder:
+                case spv::Op::OpImageQuerySizeLod:
+                case spv::Op::OpImageQuerySize:
+                case spv::Op::OpImageQueryLod:
+                case spv::Op::OpImageQueryLevels:
+                case spv::Op::OpImageQuerySamples:
+                  return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                         << "Any variable in the TileAttachmentQCOM Storage "
+                            "Class must "
+                            "not be consumed by an OpImageQuery* instruction";
+                default:
+                  break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (!(_.HasDecoration(inst->id(), spv::Decoration::DescriptorSet) &&
+          _.HasDecoration(inst->id(), spv::Decoration::Binding))) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Any variable in the TileAttachmentQCOM Storage Class must "
+                "be decorated with DescriptorSet and Binding";
+    }
+    if (_.HasDecoration(inst->id(), spv::Decoration::Component)) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Any variable in the TileAttachmentQCOM Storage Class must "
+                "not be decorated with Component decoration";
     }
   }
 
@@ -2781,15 +2850,40 @@ spv_result_t ValidatePtrComparison(ValidationState_t& _,
 
   const auto op1 = _.FindDef(inst->GetOperandAs<uint32_t>(2u));
   const auto op2 = _.FindDef(inst->GetOperandAs<uint32_t>(3u));
-  if (!op1 || !op2 || op1->type_id() != op2->type_id()) {
-    return _.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The types of Operand 1 and Operand 2 must match";
-  }
   const auto op1_type = _.FindDef(op1->type_id());
+  const auto op2_type = _.FindDef(op2->type_id());
   if (!op1_type || (op1_type->opcode() != spv::Op::OpTypePointer &&
                     op1_type->opcode() != spv::Op::OpTypeUntypedPointerKHR)) {
     return _.diag(SPV_ERROR_INVALID_ID, inst)
            << "Operand type must be a pointer";
+  }
+
+  if (!op2_type || (op2_type->opcode() != spv::Op::OpTypePointer &&
+                    op2_type->opcode() != spv::Op::OpTypeUntypedPointerKHR)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "Operand type must be a pointer";
+  }
+
+  if (inst->opcode() == spv::Op::OpPtrDiff) {
+    if (op1->type_id() != op2->type_id()) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "The types of Operand 1 and Operand 2 must match";
+    }
+  } else {
+    const auto either_untyped =
+        op1_type->opcode() == spv::Op::OpTypeUntypedPointerKHR ||
+        op2_type->opcode() == spv::Op::OpTypeUntypedPointerKHR;
+    if (either_untyped) {
+      const auto sc1 = op1_type->GetOperandAs<spv::StorageClass>(1);
+      const auto sc2 = op2_type->GetOperandAs<spv::StorageClass>(1);
+      if (sc1 != sc2) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "Pointer storage classes must match";
+      }
+    } else if (op1->type_id() != op2->type_id()) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "The types of Operand 1 and Operand 2 must match";
+    }
   }
 
   spv::StorageClass sc = op1_type->GetOperandAs<spv::StorageClass>(1u);

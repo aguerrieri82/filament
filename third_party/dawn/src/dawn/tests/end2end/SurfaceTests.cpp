@@ -47,12 +47,11 @@ struct GLFWindowDestroyer {
 
 class SurfaceTests : public DawnTest {
   protected:
-    wgpu::RequiredLimits GetRequiredLimits(const wgpu::SupportedLimits& supported) override {
+    void GetRequiredLimits(const dawn::utils::ComboLimits& supported,
+                           dawn::utils::ComboLimits& required) override {
         // Just copy all the limits, though all we really care about is
         // maxStorageBuffersInFragmentStage
-        wgpu::RequiredLimits required = {};
-        required.limits = supported.limits;
-        return required;
+        supported.UnlinkedCopyTo(&required);
     }
 
   public:
@@ -223,11 +222,11 @@ TEST_P(SurfaceTests, Basic) {
     // Get texture
     wgpu::SurfaceTexture surfaceTexture;
     surface.GetCurrentTexture(&surfaceTexture);
-    ASSERT_EQ(surfaceTexture.status, wgpu::SurfaceGetCurrentTextureStatus::Success);
+    ASSERT_EQ(surfaceTexture.status, wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal);
     ClearTexture(surfaceTexture.texture, {1.0, 0.0, 0.0, 1.0});
 
     // Present
-    surface.Present();
+    ASSERT_EQ(wgpu::Status::Success, surface.Present());
 }
 
 // Test reconfiguring the surface
@@ -257,7 +256,7 @@ TEST_P(SurfaceTests, ReconfigureAfterGetCurrentTexture) {
         wgpu::SurfaceTexture surfaceTexture;
         surface.GetCurrentTexture(&surfaceTexture);
         ClearTexture(surfaceTexture.texture, {0.0, 1.0, 0.0, 1.0});
-        surface.Present();
+        ASSERT_EQ(wgpu::Status::Success, surface.Present());
     }
 }
 
@@ -271,7 +270,7 @@ TEST_P(SurfaceTests, ReconfigureAfterUnconfigure) {
         wgpu::SurfaceTexture surfaceTexture;
         surface.GetCurrentTexture(&surfaceTexture);
         ClearTexture(surfaceTexture.texture, {1.0, 0.0, 0.0, 1.0});
-        surface.Present();
+        ASSERT_EQ(wgpu::Status::Success, surface.Present());
     }
 
     surface.Unconfigure();
@@ -281,7 +280,7 @@ TEST_P(SurfaceTests, ReconfigureAfterUnconfigure) {
         wgpu::SurfaceTexture surfaceTexture;
         surface.GetCurrentTexture(&surfaceTexture);
         ClearTexture(surfaceTexture.texture, {0.0, 1.0, 0.0, 1.0});
-        surface.Present();
+        ASSERT_EQ(wgpu::Status::Success, surface.Present());
     }
 }
 
@@ -339,7 +338,7 @@ TEST_P(SurfaceTests, SwitchPresentMode) {
                 wgpu::SurfaceTexture surfaceTexture;
                 surface.GetCurrentTexture(&surfaceTexture);
                 ClearTexture(surfaceTexture.texture, {0.0, 0.0, 0.0, 1.0});
-                surface.Present();
+                ASSERT_EQ(wgpu::Status::Success, surface.Present());
             }
 
             {
@@ -349,7 +348,7 @@ TEST_P(SurfaceTests, SwitchPresentMode) {
                 wgpu::SurfaceTexture surfaceTexture;
                 surface.GetCurrentTexture(&surfaceTexture);
                 ClearTexture(surfaceTexture.texture, {0.0, 0.0, 0.0, 1.0});
-                surface.Present();
+                ASSERT_EQ(wgpu::Status::Success, surface.Present());
                 surface.Unconfigure();
             }
         }
@@ -369,7 +368,7 @@ TEST_P(SurfaceTests, ResizingSurfaceOnly) {
         wgpu::SurfaceTexture surfaceTexture;
         surface.GetCurrentTexture(&surfaceTexture);
         ClearTexture(surfaceTexture.texture, {0.05f * i, 0.0, 0.0, 1.0});
-        surface.Present();
+        ASSERT_EQ(wgpu::Status::Success, surface.Present());
     }
 }
 
@@ -390,7 +389,7 @@ TEST_P(SurfaceTests, ResizingWindowOnly) {
         wgpu::SurfaceTexture surfaceTexture;
         surface.GetCurrentTexture(&surfaceTexture);
         ClearTexture(surfaceTexture.texture, {0.05f * i, 0.0, 0.0, 1.0});
-        surface.Present();
+        ASSERT_EQ(wgpu::Status::Success, surface.Present());
     }
 }
 
@@ -417,7 +416,7 @@ TEST_P(SurfaceTests, ResizingWindowAndSurface) {
         wgpu::SurfaceTexture surfaceTexture;
         surface.GetCurrentTexture(&surfaceTexture);
         ClearTexture(surfaceTexture.texture, {0.05f * i, 0.0, 0.0, 1.0});
-        surface.Present();
+        ASSERT_EQ(wgpu::Status::Success, surface.Present());
     }
 }
 
@@ -451,7 +450,7 @@ TEST_P(SurfaceTests, SwitchingDevice) {
         wgpu::SurfaceTexture surfaceTexture;
         surface.GetCurrentTexture(&surfaceTexture);
         ClearTexture(surfaceTexture.texture, {0.0, 1.0, 0.0, 1.0}, deviceToUse);
-        surface.Present();
+        ASSERT_EQ(wgpu::Status::Success, surface.Present());
     }
 }
 
@@ -474,11 +473,13 @@ TEST_P(SurfaceTests, GetAfterUnconfigure) {
     surface.Unconfigure();
 
     wgpu::SurfaceTexture surfaceTexture;
-    ASSERT_DEVICE_ERROR(surface.GetCurrentTexture(&surfaceTexture));
+    // No device anymore, so no device error, just the synchronous error and an instance log.
+    ASSERT_EQ(wgpu::Status::Error, surface.Present());
+    surface.GetCurrentTexture(&surfaceTexture);
     EXPECT_EQ(surfaceTexture.status, wgpu::SurfaceGetCurrentTextureStatus::Error);
 }
 
-// Getting current texture after losing the device
+// Getting current texture after losing the device should appear as if we got a texture.
 TEST_P(SurfaceTests, GetAfterDeviceLoss) {
     wgpu::Surface surface = CreateTestSurface();
     wgpu::SurfaceConfiguration config = GetPreferredConfiguration(surface);
@@ -488,15 +489,13 @@ TEST_P(SurfaceTests, GetAfterDeviceLoss) {
 
     wgpu::SurfaceTexture surfaceTexture;
     surface.GetCurrentTexture(&surfaceTexture);
-    EXPECT_EQ(surfaceTexture.status, wgpu::SurfaceGetCurrentTextureStatus::DeviceLost);
+    EXPECT_EQ(surfaceTexture.status, wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal);
 }
 
 // Presenting without configuring fails
 TEST_P(SurfaceTests, PresentWithoutConfigure) {
     wgpu::Surface surface = CreateTestSurface();
-    // TODO(dawn:2320): This cannot throw a device error since the surface is
-    // not aware of the device at this stage.
-    /*ASSERT_DEVICE_ERROR(*/ surface.Present() /*)*/;
+    ASSERT_EQ(wgpu::Status::Error, surface.Present());
 }
 
 // Presenting after unconfiguring fails
@@ -508,7 +507,8 @@ TEST_P(SurfaceTests, PresentAfterUnconfigure) {
 
     surface.Unconfigure();
 
-    ASSERT_DEVICE_ERROR(surface.Present());
+    // No device anymore, so no device error, just the synchronous error and an instance log.
+    ASSERT_EQ(wgpu::Status::Error, surface.Present());
 }
 
 // Presenting without getting current texture first fails
@@ -517,7 +517,10 @@ TEST_P(SurfaceTests, PresentWithoutGet) {
     wgpu::SurfaceConfiguration config = GetPreferredConfiguration(surface);
 
     surface.Configure(&config);
-    ASSERT_DEVICE_ERROR(surface.Present());
+
+    wgpu::Status presentStatus;
+    ASSERT_DEVICE_ERROR(presentStatus = surface.Present());
+    ASSERT_EQ(wgpu::Status::Success, presentStatus);
 }
 
 // Check that all surfaces must support RenderAttachment.
@@ -548,7 +551,7 @@ TEST_P(SurfaceTests, Sampling) {
     ClearTexture(t.texture, {1.0, 0.0, 0.0, 1.0});
     SampleLoadTexture(t.texture, utils::RGBA8::kRed);
 
-    surface.Present();
+    ASSERT_EQ(wgpu::Status::Success, surface.Present());
 }
 
 // Test copying from the surface when it is supported.
@@ -576,7 +579,7 @@ TEST_P(SurfaceTests, CopyFrom) {
         EXPECT_PIXEL_RGBA8_EQ(utils::RGBA8::kRed, t.texture, 0, 0);
     }
 
-    surface.Present();
+    ASSERT_EQ(wgpu::Status::Success, surface.Present());
 }
 
 // Test copying to the surface when it is supported.
@@ -620,12 +623,12 @@ TEST_P(SurfaceTests, CopyTo) {
         EXPECT_PIXEL_RGBA8_EQ(utils::RGBA8::kRed, t.texture, 0, 0);
     }
 
-    surface.Present();
+    ASSERT_EQ(wgpu::Status::Success, surface.Present());
 }
 
 // Test using the surface as a storage texture when supported.
 TEST_P(SurfaceTests, Storage) {
-    DAWN_SUPPRESS_TEST_IF(GetSupportedLimits().limits.maxStorageBuffersInFragmentStage < 1);
+    DAWN_TEST_UNSUPPORTED_IF(GetSupportedLimits().maxStorageBuffersInFragmentStage < 1);
     wgpu::Surface surface = CreateTestSurface();
     wgpu::SurfaceCapabilities caps;
     surface.GetCapabilities(adapter, &caps);
@@ -654,11 +657,12 @@ TEST_P(SurfaceTests, Storage) {
     ClearTexture(t.texture, {1.0, 0.0, 0.0, 1.0});
     StorageLoadTexture(t.texture, utils::RGBA8::kRed);
 
-    surface.Present();
+    ASSERT_EQ(wgpu::Status::Success, surface.Present());
 }
 
 DAWN_INSTANTIATE_TEST(SurfaceTests,
                       D3D11Backend(),
+                      D3D11Backend({"d3d11_delay_flush_to_gpu"}),
                       D3D12Backend(),
                       MetalBackend(),
                       OpenGLBackend(),

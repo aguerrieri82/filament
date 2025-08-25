@@ -49,7 +49,8 @@ class Queue final : public QueueBase {
 
     // Returns a shared fence which represents work done up to lastUsageSerial. It may be a cached
     // fence or newly created.
-    ResultOrError<Ref<SharedFence>> GetOrCreateSharedFence(ExecutionSerial lastUsageSerial);
+    ResultOrError<Ref<SharedFence>> GetOrCreateSharedFence(ExecutionSerial lastUsageSerial,
+                                                           wgpu::SharedFenceType type);
 
   private:
     Queue(Device* device, const QueueDescriptor* descriptor);
@@ -65,10 +66,11 @@ class Queue final : public QueueBase {
                                 const TexelCopyBufferLayout& dataLayout,
                                 const Extent3D& writeSizePixel) override;
 
-    ResultOrError<bool> WaitForQueueSerial(ExecutionSerial serial, Nanoseconds timeout) override;
+    ResultOrError<ExecutionSerial> WaitForQueueSerialImpl(ExecutionSerial waitSerial,
+                                                          Nanoseconds timeout) override;
 
     bool HasPendingCommands() const override;
-    MaybeError SubmitPendingCommands() override;
+    MaybeError SubmitPendingCommandsImpl() override;
     ResultOrError<ExecutionSerial> CheckAndUpdateCompletedSerials() override;
     void ForceEventualFlushOfCommands() override;
     MaybeError WaitForIdleForDestruction() override;

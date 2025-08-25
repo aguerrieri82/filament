@@ -90,7 +90,7 @@ void main() {
 TEST_F(GlslWriterTest, StripAllNames_CombinedTextureSamplerName) {
     BindingPoint texture_bp{1, 2};
     BindingPoint sampler_bp{3, 4};
-    auto* tex_ty = ty.Get<core::type::SampledTexture>(core::type::TextureDimension::k2d, ty.f32());
+    auto* tex_ty = ty.sampled_texture(core::type::TextureDimension::k2d, ty.f32());
     auto* texture = b.Var("texture", ty.ptr<handle>(tex_ty));
     auto* sampler = b.Var("sampler", ty.ptr<handle>(ty.sampler()));
     texture->SetBindingPoint(texture_bp.group, texture_bp.binding);
@@ -110,8 +110,7 @@ TEST_F(GlslWriterTest, StripAllNames_CombinedTextureSamplerName) {
     Options options;
     options.strip_all_names = true;
     options.bindings.sampler_texture_to_name.insert(
-        {binding::CombinedTextureSamplerPair{texture_bp, sampler_bp},
-         "tint_combined_texture_sampler"});
+        {CombinedTextureSamplerPair{texture_bp, sampler_bp}, "tint_combined_texture_sampler"});
     ASSERT_TRUE(Generate(options)) << err_ << output_.glsl;
     EXPECT_EQ(output_.glsl, GlslHeader() + R"(precision highp float;
 precision highp int;

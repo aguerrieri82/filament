@@ -63,7 +63,7 @@ class HlslWriterTestHelperBase : public BASE {
     bool Generate(Options options = {}) {
         auto result = writer::Generate(mod, options);
         if (result != Success) {
-            err_ = result.Failure().reason.Str();
+            err_ = result.Failure().reason;
             return false;
         }
         output_ = result.Get();
@@ -74,9 +74,9 @@ class HlslWriterTestHelperBase : public BASE {
             uint32_t hlsl_shader_model = 66;
             bool require_16bit_types = true;
 
-            auto validate_res =
-                validate::ValidateUsingDXC(dxc.Path(), output_.hlsl, output_.entry_points,
-                                           require_16bit_types, hlsl_shader_model);
+            auto validate_res = validate::ValidateUsingDXC(
+                dxc.Path(), output_.hlsl, output_.entry_point_name, output_.pipeline_stage,
+                require_16bit_types, hlsl_shader_model);
             if (validate_res.failed) {
                 size_t line_num = 1;
 

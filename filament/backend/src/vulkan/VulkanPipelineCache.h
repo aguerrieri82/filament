@@ -18,12 +18,9 @@
 #define TNT_FILAMENT_BACKEND_VULKANPIPELINECACHE_H
 
 #include "VulkanCommands.h"
-#include "VulkanMemory.h"
 
 #include <backend/DriverEnums.h>
 #include <backend/TargetBufferInfo.h>
-
-#include "backend/Program.h"
 
 #include <bluevk/BlueVK.h>
 
@@ -31,11 +28,8 @@
 #include <utils/compiler.h>
 #include <utils/Hash.h>
 
-#include <list>
 #include <tsl/robin_map.h>
 #include <type_traits>
-#include <vector>
-#include <unordered_map>
 
 namespace filament::backend {
 
@@ -106,6 +100,9 @@ public:
     void bindPrimitiveTopology(VkPrimitiveTopology topology) noexcept;
     void bindVertexArray(VkVertexInputAttributeDescription const* attribDesc,
             VkVertexInputBindingDescription const* bufferDesc, uint8_t count);
+
+    // Set the current bindings for the pipeline and descriptor sets back to empty.
+    void resetBoundPipeline();
 
     // Destroys all managed Vulkan objects. This should be called before changing the VkDevice.
     void terminate() noexcept;
@@ -203,6 +200,10 @@ private:
 
     // Immutable state.
     VkDevice mDevice = VK_NULL_HANDLE;
+
+    // Vuklan Driver pipeline cache handle. In the cases a pipeline has been  evicted by the `gc`,
+    // recreating the same pipeline is cheaper, helping with frame stalling.
+    VkPipelineCache mPipelineCache = VK_NULL_HANDLE;
 
     // Current requirements for the pipeline layout, pipeline, and descriptor sets.
     PipelineKey mPipelineRequirements = {};

@@ -29,7 +29,7 @@
 #define SRC_TINT_LANG_CORE_IR_TRANSFORM_RENAME_CONFLICTS_H_
 
 #include "src/tint/lang/core/ir/validator.h"
-#include "src/tint/utils/result/result.h"
+#include "src/tint/utils/result.h"
 
 // Forward declarations.
 namespace tint::core::ir {
@@ -42,12 +42,18 @@ namespace tint::core::ir::transform {
 const core::ir::Capabilities kRenameConflictsCapabilities{
     core::ir::Capability::kAllow8BitIntegers,
     core::ir::Capability::kAllow64BitIntegers,
+    core::ir::Capability::kAllowMultipleEntryPoints,
+    core::ir::Capability::kAllowOverrides,
     core::ir::Capability::kAllowPointersAndHandlesInStructures,
     core::ir::Capability::kAllowVectorElementPointer,
     core::ir::Capability::kAllowHandleVarsWithoutBindings,
     core::ir::Capability::kAllowClipDistancesOnF32,
     core::ir::Capability::kAllowPrivateVarsInFunctions,
     core::ir::Capability::kAllowAnyLetType,
+    core::ir::Capability::kAllowModuleScopeLets,
+    core::ir::Capability::kAllowWorkspacePointerInputToEntryPoint,
+    core::ir::Capability::kAllowDuplicateBindings,
+    core::ir::Capability::kAllowNonCoreTypes,
 };
 
 /// RenameConflicts is a transform that renames declarations which prevent identifiers from
