@@ -430,8 +430,8 @@ VulkanTexture::VulkanTexture(VkDevice device, VkPhysicalDevice physicalDevice,
 
     VkImage textureImage;
     VkResult result = vkCreateImage(device, &imageInfo, VKALLOC, &textureImage);
-    if (result != VK_SUCCESS || FVK_ENABLED(FVK_DEBUG_TEXTURE)) {
-        FVK_LOGD << "vkCreateImage: "
+    //if (result != VK_SUCCESS || FVK_ENABLED(FVK_DEBUG_TEXTURE)) {
+        FVK_LOGD << "vkCreateImage2: "
             << "image = " << textureImage << ", "
             << "result = " << result << ", "
             << "handle = " << utils::io::hex << textureImage << utils::io::dec << ", "
@@ -444,7 +444,7 @@ VulkanTexture::VulkanTexture(VkDevice device, VkPhysicalDevice physicalDevice,
             << "flags = " << imageInfo.flags << ", "
             << "target = " << static_cast<int>(target) <<", "
             << "format = " << vkFormat;
-    }
+    //}
     FILAMENT_CHECK_POSTCONDITION(result == VK_SUCCESS) << "Unable to create image."
                                                        << " error=" << static_cast<int32_t>(result);
 
@@ -452,7 +452,9 @@ VulkanTexture::VulkanTexture(VkDevice device, VkPhysicalDevice physicalDevice,
     VkMemoryRequirements memReqs;
     vkGetImageMemoryRequirements(device, textureImage, &memReqs);
 
-    bool const useTransientAttachment = imageInfo.usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+    bool useTransientAttachment = imageInfo.usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+
+    //useTransientAttachment = false;
 
     VkFlags const requiredMemoryFlags =
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
@@ -461,9 +463,18 @@ VulkanTexture::VulkanTexture(VkDevice device, VkPhysicalDevice physicalDevice,
     uint32_t memoryTypeIndex
             = context.selectMemoryType(memReqs.memoryTypeBits, requiredMemoryFlags);
 
+
+    FVK_LOGD << "VulkanTexture: memory requirements for image "
+             << utils::io::hex << textureImage << utils::io::dec
+             << ": size = " << memReqs.size
+             << ", alignment = " << memReqs.alignment
+             << ", memoryTypeBits = " << utils::io::hex << memReqs.memoryTypeBits << utils::io::dec
+             << ", selected memoryTypeIndex = " << memoryTypeIndex
+             << ", requiredMemoryFlags = " << requiredMemoryFlags;      
+             
     FILAMENT_CHECK_POSTCONDITION(memoryTypeIndex < VK_MAX_MEMORY_TYPES)
-            << "VulkanTexture: unable to find a memory type that meets requirements. " 
-            << "R:" << memReqs.memoryTypeBits << " RQ:" << requiredMemoryFlags;
+            << "VulkanTexture: unable to find a memory type that meets requirements. ";
+
 
     VkMemoryAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
